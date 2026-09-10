@@ -59,7 +59,7 @@ flowchart LR
     FASTAPI -->|HTTP| LG
     LG -->|Cypher / Bolt| N4J
     LG -->|Ollama Cloud API| LLM["GLM-2.3:cloud"]
-    LG -->|embeddings, in-process| EMB["BGE-M3"]
+    LG -->|embeddings, in-process| EMB["FastEmbed (ONNX)"]
     ING -->|writes nodes + vectors| N4J
     CORPUS --> ING
 ```
@@ -69,7 +69,7 @@ flowchart LR
 | 1 — UI app | React (Vite) + FastAPI (Uvicorn) | Chat UI; FastAPI proxies chat + streaming (SSE) to the agent over HTTP | `3000` (React), `8000` (FastAPI) |
 | 2 — Agent | Python + LangGraph, `neo4j-graphrag` | Retrieval strategy routing, hybrid retrieval, Text2Cypher, citation assembly | `8001` |
 | 3 — Neo4j | Neo4j Community Edition 5.x | Graph + vector store; single source of truth for the knowledge graph | `7474` (Browser), `7687` (Bolt) |
-| ingest (one-off) | Python, `neo4j-graphrag`, BGE-M3 | Parse, chunk, embed, extract entities/relations; writes to Neo4j. Run with `docker compose run --rm ingest` | — |
+| ingest (one-off) | Python, `neo4j-graphrag`, FastEmbed | Parse, chunk, embed, extract entities/relations; writes to Neo4j. Run with `docker compose run --rm ingest` | — |
 
 ---
 
@@ -87,15 +87,15 @@ The agent is a LangGraph state machine. Proposed node flow:
 
 ```
 route → rewrite → retrieve → (traverse?) → synthesize → cite
-                       ↑__________↓  (iterate if insufficient)
+                       ↑__________↓  (iterate if insufficient; max 3 iterations)
 ```
 
 | Capability | Description |
 |---|---|
-| **Agentic routing** | Classifies the query intent (lookup / relationship / compliance-mapping) and selects a retrieval strategy; rewrites vague queries into retrieval-friendly forms; loops back if retrieved context is insufficient |
-| **Hybrid retrieval** | `neo4j-graphrag` retrievers over `Chunk` vector index — dense (BGE-M3, 1024-dim) + sparse (BM25) combined |
-| **Text2Cypher** | Generates Cypher from the natural-language question against the known graph schema to traverse multi-hop relationships the vector index can't answer (e.g. *which code components relate to the control satisfying CPS 230 §23?*) |
-| **Citations** | Every synthesized answer carries provenance: document id, title, section/heading, and clause number where applicable (regulatory docs keep their native numbering) |
+| **Agentic routing** | Classifies the query intent (lookup / relationship / compliance-mapping) and selects a retrieval strategy; rewrites vague queries into retrieval-friendly forms. The retrieve→traverse loop exits when an LLM sufficiency check judges the context adequate to answer, or after **3 iterations** (hard cap — whichever comes first) |
+| **Hybrid retrieval** | `neo4j-graphrag` retrievers over `Chunk` — dense (FastEmbed ONNX, 1024-dim vector index) + sparse (BM25, Neo4j full-text index) combined |
+| **Text2Cypher** | Generates Cypher from the natural-language question against the known graph schema to traverse multi-hop relationships the vector index can't answer (e.g. *which code components relate to the control satisfying CPS 230 §23?*). Guardrails: the graph schema is injected into the prompt; generation happens on a **read-only** Neo4j session; generated statements are validated before execution; on validation/runtime error the agent retries with the error appended, bounded at 3 attempts, then falls back to hybrid retrieval |
+| **Citations** | Every synthesized answer carries provenance: document id, title, section/heading, and clause number where applicable (regulatory docs keep their native numbering). Code citations use a different provenance shape: `path/to/file.py#symbol[:lines]` |
 
 ### 3. Neo4j GraphRAG store (Container 3)
 
@@ -105,26 +105,43 @@ Neo4j Community Edition (Docker image `neo4j:5-community`). Proposed schema:
 // Document + chunk layer (retrieval)
 (:Document {id, title, type, source_path})-[:HAS_CHUNK]->(:Chunk {id, text, embedding, section})
 // vector index on Chunk.embedding (1024-dim, cosine)
+// full-text index on Chunk.text (BM25 sparse retrieval)
 
 // Knowledge layer (extraction, via neo4j-graphrag schema-guided prompts)
-(:Entity {id, name, type})-[:RELATES_TO {type, source_chunk}]->(:Entity)
-// Entity types seeded per document class (see Document corpus below)
+// Typed labels + named relationships (NOT a generic (:Entity {type}) blob):
+// a strongly-typed schema keeps the Text2Cypher prompt compact and the
+// generated Cypher constrained. Labels below are representative; the
+// authoritative schema lives with the extraction config.
+(:CodeComponent {id, name, path})          // from source code
+(:Pattern        {id, name})               // from architecture / design docs
+(:Risk           {id, name})
+(:Control        {id, name, standard})     // from OWASP / security guidance
+(:Obligation     {id, name, regulator})    // from regulatory material
+(:CpsClause      {id, doc, number})        // e.g. CPS 234 clause 27
+
+// Cross-class edges — the whole point of the PoC:
+//   (:CodeComponent)-[:MITIGATES]->(:Risk)-[:GOVERNED_BY]->(:CpsClause)
+//   (:Pattern)-[:ADDRESSES]->(:Risk)
+//   (:Control)-[:IMPLEMENTS]->(:Obligation)
+// Every knowledge edge carries provenance: {source_chunk, source_document}
 ```
+
+Entities are **merged across documents** into one global graph (deduplicated on `(label, name)`), so relationships can span document classes — e.g. a code component in `data/code/` connecting to a clause in `data/regulatory/`. Per-document scoping would make the PoC's traversal questions unanswerable.
 
 ### 4. Ingestion job (one-off)
 
 Runs as a compose service but only via `docker compose run --rm ingest`. Pipeline:
 
-1. **Parse** — walk `data/`, classify each file by document class (below).
+1. **Parse** — walk `data/`, classify each file by document class (below). PDFs are converted to markdown first (PDF extraction library, e.g. Docling) — conversion quality determines whether clause numbers survive into citations, so spot-check the markdown for the regulatory docs before ingesting.
 2. **Chunk** — class-specific strategy:
    - *Code* → symbol/AST-aware chunking (module, class, function boundaries)
    - *Semi-structured markdown* → heading-hierarchy chunking (keeps section paths for citations)
    - *Unstructured regulatory/security docs* → semantic chunking; preserve clause numbers as metadata
-3. **Embed** — BGE-M3 (dense + sparse) in-process, using Apple MPS on the host-adjacent run.
-4. **Extract** — `neo4j-graphrag` `SchemaEntityConstraint`-style schema-guided entity/relation extraction with GLM-2.3:cloud.
-5. **Write** — upsert `Document`/`Chunk`/`Entity` nodes into Neo4j; create/reuse the vector index.
+3. **Embed** — FastEmbed (ONNX, int8-quantized) in-process on CPU: `mixedbread-ai/mxbai-embed-large-v1`, 1024-dim dense. No GPU/MPS — Docker on macOS can't reach Apple MPS, so the model must be CPU-viable; the quantized ONNX build is.
+4. **Extract** — `neo4j-graphrag` schema-guided entity/relation extraction with GLM-2.3:cloud, against the typed-label schema above.
+5. **Write** — upsert `Document`/`Chunk` nodes; create/reuse the **vector index and the full-text index** (both are required: dense and sparse retrieval each target one). Merge entities across documents by `(label, name)`; write edges with `{source_chunk, source_document}` provenance.
 
-Idempotent: re-running replaces documents by `source_path` (re-ingest a file by re-running the job).
+Idempotent: re-running replaces documents by `source_path` (re-ingest a file by re-running the job). Replacement is a `DETACH DELETE` of the document's `Chunk` nodes plus every knowledge edge whose provenance points at those chunks — stale edges never survive a re-ingest. Entity *nodes* are not deleted (they may be referenced by edges from other documents); a re-run re-merges them by `(label, name)`.
 
 ---
 
@@ -146,9 +163,9 @@ The graph's value comes from **cross-class edges**: e.g. `(CodeComponent)-[:MITI
 | Role | Model | Access | Notes |
 |---|---|---|---|
 | Reasoning / generation / extraction | **GLM-2.3:cloud** | Ollama Cloud REST API (OpenAI-compatible endpoint), API key via `OLLAMA_API_KEY` | Used by the agent (synthesis, routing, rewriting) and by the ingestion job (entity/relation extraction) |
-| Embeddings | **BGE-M3** (`BAAI/bge-m3`) | In-process library (sentence-transformers / FastEmbed) | 1024-dim dense + sparse weights; high-dimensional dense space improves fine-grained semantic matching across regulatory text and code identifiers; runs on Apple MPS during ingestion |
+| Embeddings | **`mixedbread-ai/mxbai-embed-large-v1`** | In-process via **FastEmbed** (int8-quantized ONNX) | 1024-dim dense, strong fine-grained matching for clause↔code citations. CPU-only and container-friendly — no GPU/MPS needed. **The agent and ingest job must use the identical model** so queries and chunks share one vector space (`EMBEDDING_MODEL` enforces this) |
 
-No LLM runs locally — the agent and ingestion job both call the Ollama Cloud API, so containers stay small and CPU-only.
+No LLM runs locally — the agent and ingestion job both call the Ollama Cloud API, so containers stay small and CPU-only. Embeddings run in-process on CPU (quantized ONNX); sparse retrieval is BM25 over the Neo4j full-text index, not a model.
 
 ---
 
@@ -160,6 +177,7 @@ graphrag/
 ├── docker-compose.yml        # ui, agent, neo4j (long-running) + ingest (one-off)
 ├── .env.example              # template — copy to .env
 ├── data/                     # documents + code to ingest (git-ignored)
+├── eval/                     # golden question set + logged retrieval traces (in git)
 ├── ui/                       # React frontend + FastAPI backend, Dockerfile
 ├── agent/                    # LangGraph agent, Dockerfile
 └── ingest/                   # ingestion pipeline, Dockerfile
@@ -192,9 +210,11 @@ cp .env.example .env
 #    data/code/         source code to ingest
 
 # 4. Start the three long-running services
+#    (compose wires neo4j with a healthcheck; agent + ui depend_on it healthy)
 docker compose up -d          # ui (3000), agent (8001), neo4j (7474/7687)
 
 # 5. Run the one-off ingestion job
+#    (depends_on neo4j healthy — Bolt is ready before parsing starts)
 docker compose run --rm ingest
 
 # 6. Open the UI
@@ -208,18 +228,25 @@ open http://localhost:3000
 | Variable | Used by | Description |
 |---|---|---|
 | `OLLAMA_API_KEY` | agent, ingest | API key for the Ollama Cloud API |
-| `OLLAMA_BASE_URL` | agent, ingest | Ollama Cloud OpenAI-compatible base URL |
+| `OLLAMA_BASE_URL` | agent, ingest | Ollama Cloud OpenAI-compatible base URL (default `https://ollama.com/v1`; confirm the exact endpoint at build time) |
 | `OLLAMA_MODEL` | agent, ingest | Model tag — `glm-2.3:cloud` |
 | `NEO4J_URI` | agent, ingest | Bolt URI — `bolt://neo4j:7687` (in-network) |
 | `NEO4J_USER` / `NEO4J_PASSWORD` | compose, agent, ingest | Neo4j auth (set a real password; don't ship defaults) |
-| `EMBEDDING_MODEL` | agent, ingest | `BAAI/bge-m3` |
+| `EMBEDDING_MODEL` | agent, ingest | `mixedbread-ai/mxbai-embed-large-v1` — **must be identical for agent and ingest** (shared vector space) |
 | `EMBEDDING_DIM` | agent, ingest | `1024` — must match the vector index |
+| `RETRIEVAL_MODE` | agent | `hybrid` (default) or `vector` — the vector-only baseline used in evaluation |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | ingest | Semantic chunking parameters (regulatory + security docs) |
 | `AGENT_PORT` / `UI_PORT` | compose | Published ports (defaults `8001` / `3000`) |
 
 ---
 
 ## PoC evaluation
+
+The "hybrid is measurably better than vector-only" claim needs a baseline, so evaluation is **part of the PoC, not a deferred roadmap item**. Three pieces:
+
+1. **Golden question set** — the sample questions below (plus more as they come up) live in `eval/golden_questions.jsonl` with expected citations and expected graph paths, committed before the UI exists.
+2. **Retrieval traces** — every agent run logs one JSONL trace to `eval/traces/`: route chosen, rewritten query, queries issued, retrieved chunk ids + scores, traversed subgraph, iteration count, timings, and final citations. Traces are what make the comparison possible retroactively.
+3. **Baseline toggle** — `RETRIEVAL_MODE=vector` runs the same pipeline with graph traversal and the sparse side disabled. Every golden question is run under both modes; the comparison is hybrid vs vector-only on the same questions.
 
 Success will be assessed against sample questions that **cross document classes**, e.g.:
 
@@ -236,8 +263,10 @@ Success will be assessed against sample questions that **cross document classes*
 
 - **Neo4j Community Edition** — no RBAC, no hot backups, single instance; acceptable for a PoC, not for shared production use.
 - **Cloud LLM dependency** — all generation goes through the Ollama Cloud API: network-dependent, adds latency, and means document content (including regulatory material) leaves the machine during extraction/retrieval. Assess before ingesting anything sensitive.
+- **Extraction cost** — schema-guided extraction is the most expensive step: every chunk goes to the cloud LLM, and `data/` is unbounded (whatever is dropped in). Size the corpus before the first ingest run and keep a rough token-cost expectation in mind.
 - **Extraction quality** — the knowledge graph is only as good as GLM-2.3:cloud's schema-guided extraction; wrong or missing edges degrade Text2Cypher answers. The PoC includes manual spot-checks of extracted edges.
-- **Mac resource limits** — BGE-M3 + Neo4j + three containers together need headroom; Neo4j heap kept modest (CE, single user).
+- **PDF conversion quality** — clause numbers must survive PDF→markdown conversion or regulatory citations break; spot-check converted markdown before ingesting (see pipeline step 1).
+- **Mac resource limits** — FastEmbed (CPU) + Neo4j + three containers together need headroom; Neo4j heap kept modest (CE, single user).
 - **Model naming** — confirm the exact Ollama Cloud model tag for GLM-2.3 at build time; `OLLAMA_MODEL` makes it a one-line change.
 
 ---
@@ -246,7 +275,7 @@ Success will be assessed against sample questions that **cross document classes*
 
 - Streaming graph visualisation of retrieved subgraphs in the UI
 - Watcher-based ingestion service (auto-ingest on `data/` changes)
-- Evaluation harness (retrieval recall, citation precision) with a golden question set
+- Automated evaluation runs in CI (retrieval recall, citation precision over the golden question set — the manual harness ships with the PoC)
 - Auth on the FastAPI backend; Neo4j Enterprise upgrade path if multi-user is needed
 - Local-model fallback (Ollama local) to remove cloud dependency
 
@@ -261,5 +290,6 @@ Success will be assessed against sample questions that **cross document classes*
 - [Neo4j Community Edition](https://neo4j.com/docs/operations-manual/current/installation/)
 - [LangGraph](https://langchain-ai.github.io/langgraph/)
 - [Ollama — Cloud models](https://docs.ollama.com/cloud)
-- [BGE-M3 (BAAI)](https://huggingface.co/BAAI/bge-m3)
+- [mxbai-embed-large-v1 (Mixedbread)](https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1)
+- [FastEmbed](https://qdrant.github.io/fastembed/)
 - [Rancher Desktop](https://docs.rancherdesktop.io/)
