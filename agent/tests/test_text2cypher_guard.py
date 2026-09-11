@@ -113,8 +113,14 @@ class FakeTx:
         self.rows = rows
         self.queries = []
 
-    def run(self, query, **kwargs):
-        self.queries.append((query, kwargs))
+    def run(self, query, parameters=None, **kwargs):
+        # Mirror the real driver signature: a kwarg named `query` collides
+        # with this first argument and must raise (see BM25 retriever bug).
+        if parameters is None:
+            parameters = kwargs
+        else:
+            assert not kwargs, "cannot pass both parameters and kwargs"
+        self.queries.append((query, parameters))
         if query.startswith("EXPLAIN"):
             return FakeResult()
         return [FakeRecord(row) for row in self.rows]
