@@ -23,7 +23,11 @@ _log = logging.getLogger(__name__)
 
 _DEFAULT_SCHEMA_FILE = "/app/schema/graph_schema.yaml"
 
-# Contract: reject statements containing these keywords (case-insensitive).
+# Contract: reject statements containing these keywords (case-insensitive),
+# scanned outside string literals so text like `WHERE n.note = 'please CALL back'`
+# is not a false positive. The mask replaces literal contents (escaped quotes
+# included) with empty strings, so keywords inside values are ignored.
+_STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
 _WRITE_KEYWORDS = re.compile(
     r"\b(CREATE|MERGE|DELETE|SET|DETACH|DROP|REMOVE|CALL)\b", re.IGNORECASE
 )
@@ -107,11 +111,14 @@ def _strip_code_fences(text: str) -> str:
 
 
 def _clean_statement(cypher: str) -> str:
-    """Strip fences and a trailing semicolon; reject write keywords."""
+    """Strip fences and a trailing semicolon; reject write keywords
+    (string-literal contents are excluded from the scan).
+    """
     statement = _strip_code_fences(cypher).strip().rstrip(";").strip()
     if not statement:
         raise ValueError("empty Cypher statement")
-    if _WRITE_KEYWORDS.search(statement):
+    masked = _STRING_LITERAL_RE.sub("''", statement)
+    if _WRITE_KEYWORDS.search(masked):
         raise ValueError("statement contains a write keyword; read-only Cypher only")
     return statement
 

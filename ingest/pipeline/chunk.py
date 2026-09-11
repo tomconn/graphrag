@@ -31,6 +31,12 @@ LOG = logging.getLogger(__name__)
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 CLAUSE_RE = re.compile(r"^#{3,4}\s+Clause\s+(\d+)\s*$", re.IGNORECASE)
+FENCE_RE = re.compile(r"^(```|~~~)")
+
+
+def _is_fence_toggle(line: str) -> bool:
+    """True if the line opens or closes a fenced code block (``` or ~~~)."""
+    return bool(FENCE_RE.match(line))
 
 DEFAULT_CHUNK_SIZE = 900     # approx characters
 DEFAULT_CHUNK_OVERLAP = 150
@@ -233,8 +239,13 @@ def chunk_markdown(doc_id: str, doc_type: str, text: str) -> list[Chunk]:
             chunks.append(Chunk(id="", text=piece, section=section,
                                 clause="", code_ref="", doc_type=doc_type))
 
+    in_fence = False
     for line in text.splitlines():
-        match = HEADING_RE.match(line)
+        if _is_fence_toggle(line):
+            in_fence = not in_fence
+            body_lines.append(line)
+            continue
+        match = None if in_fence else HEADING_RE.match(line)
         if match:
             emit_section()
             level, title = len(match.group(1)), match.group(2).strip()
@@ -270,8 +281,11 @@ def chunk_regulatory(doc_id: str, doc_type: str, text: str) -> list[Chunk]:
     clause_blocks: list[tuple[str, str, str, str]] = []  # (number, heading, body, part)
     current: tuple[str, str, list[str], str] | None = None
 
+    in_fence = False
     for line in text.splitlines():
-        heading = HEADING_RE.match(line)
+        if _is_fence_toggle(line):
+            in_fence = not in_fence
+        heading = None if in_fence else HEADING_RE.match(line)
         clause = CLAUSE_RE.match(line) if heading else None
         if heading and not clause:
             level, title = len(heading.group(1)), heading.group(2).strip()

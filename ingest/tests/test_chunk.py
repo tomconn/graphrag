@@ -156,17 +156,37 @@ def test_indented_code_fence_comment_is_not_a_heading():
     assert "# indented comment stays in body" in chunks[0].text
 
 
-def test_column0_hash_inside_fence_is_mistaken_for_heading():
-    """Pinned actual behavior (a known limitation): chunk_markdown is not
-    fence-aware, so a column-0 '#' line inside a code fence is treated as an
-    H1 — it splits the chunk and the following body loses its section path."""
+def test_column0_hash_inside_fence_is_not_a_heading():
+    """chunk_markdown is fence-aware: a column-0 '#' line inside a code fence
+    stays in the fence's body chunk and does not split the section."""
     doc = (
         "## Guide\n\n```python\n# looks like a heading\ndef f(): pass\n```\n\n"
         "more text\n"
     )
     chunks = chunk_markdown("doc1", "architecture", doc)
-    assert [c.section for c in chunks] == ["Guide", ""]
-    assert "def f(): pass" in chunks[1].text
+    assert len(chunks) == 1
+    assert chunks[0].section == "Guide"
+    assert "# looks like a heading" in chunks[0].text
+    assert "def f(): pass" in chunks[0].text
+    assert "more text" in chunks[0].text
+
+
+def test_tilde_fence_with_hash_is_not_a_heading():
+    doc = "## Guide\n\n~~~\n# shell comment\n~~~\n\nmore text\n"
+    chunks = chunk_markdown("doc1", "architecture", doc)
+    assert len(chunks) == 1
+    assert chunks[0].section == "Guide"
+
+
+def test_regulatory_clause_heading_inside_fence_is_not_a_clause():
+    doc = (
+        "### Clause 7\n\nInstitutions must manage operational risk.\n\n"
+        "```markdown\n### Clause 999\nexample clause text in a fence\n```\n"
+    )
+    chunks = chunk_regulatory("doc1", "regulatory", doc)
+    by_number = {c.clause: c for c in chunks if c.clause}
+    assert set(by_number) == {"7"}
+    assert "Clause 999" in "".join(c.text for c in chunks)
 
 
 # -------------------------------------------------------------- regulatory

@@ -62,12 +62,23 @@ def test_word_boundary_aware_no_false_positives():
         assert text2cypher._clean_statement(statement) == statement
 
 
-def test_keyword_inside_a_string_literal_is_a_false_positive():
-    """Pinned actual behavior: the guard is a plain regex over the whole
-    statement, so a keyword inside a quoted string literal is (over-)rejected."""
+def test_keyword_inside_a_string_literal_is_not_rejected():
+    """The guard masks string literals before scanning, so a keyword inside a
+    quoted value is not a false positive."""
     statement = "MATCH (n) WHERE n.note = 'please CALL back' RETURN n"
-    with pytest.raises(ValueError, match="write keyword"):
-        text2cypher._clean_statement(statement)
+    assert text2cypher._clean_statement(statement) == statement
+
+
+def test_write_keyword_outside_a_literal_is_still_rejected():
+    for statement in (
+        "MERGE (n) RETURN n",
+        "MATCH (n) SET n.x = 'SETTLED'",
+        "MATCH (n) DELETE n",
+        "CALL db.indexes()",
+        'MATCH (n) WHERE n.note = "merge me" MERGE (m)',
+    ):
+        with pytest.raises(ValueError, match="write keyword"):
+            text2cypher._clean_statement(statement)
 
 
 def test_trailing_semicolon_and_fences_are_stripped():

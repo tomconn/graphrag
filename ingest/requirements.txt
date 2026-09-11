@@ -6,7 +6,7 @@
 # library's experimental KG-builder API cannot express this repo's
 # deterministic merge keys (CpsClause key = "{doc}:{number}") nor the exact
 # Cypher writes pinned in docs/contracts.md.
-neo4j-graphrag[neo4j]>=1.19,<2
+neo4j-graphrag>=1.19,<2
 neo4j>=5.20,<6
 fastembed>=0.3,<1
 openai>=1.40,<2
