@@ -9,7 +9,8 @@ knowledge label's merge key (see pipeline/write.py), so concurrent writes
 stay idempotent. Per-document writes remain sequential (batched).
 
 Exit codes: 0 on success (per-file failures are logged and skipped),
-non-zero on a fatal error (config, connectivity).
+non-zero on a fatal error (config, connectivity), 75 when the stall
+watchdog force-exits a wedged run (see pipeline/logsetup.py).
 """
 from __future__ import annotations
 
@@ -121,9 +122,8 @@ def process_document(doc, chunker, embedder, extractor, writer,
 
 def run() -> None:
     started = time.monotonic()
-    logging.basicConfig(
-        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from pipeline.logsetup import setup_logging
+    setup_logging()
 
     data_dir = os.environ.get("DATA_DIR", "/app/data")
     neo4j_uri = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")

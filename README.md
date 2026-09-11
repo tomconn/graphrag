@@ -133,7 +133,7 @@ Entities are **merged across documents** into one global graph, so relationships
 
 ### 4. Ingestion job (one-off)
 
-Runs as a compose service but only via `docker compose run --rm ingest`. Pipeline:
+Runs as a compose service but only via `docker compose run --rm ingest` — **run it detached** (`docker compose run -d --rm ingest`) so a killed wrapper process can never wedge the run (see *Run logs and stall watchdog* below). Pipeline:
 
 1. **Parse** — walk `data/`, classify each file by document class (below). PDFs are converted to markdown first (PDF extraction library, e.g. Docling) — conversion quality determines whether clause numbers survive into citations, so spot-check the markdown for the regulatory docs before ingesting.
 2. **Chunk** — class-specific strategy:
@@ -145,6 +145,12 @@ Runs as a compose service but only via `docker compose run --rm ingest`. Pipelin
 5. **Write** — upsert `Document`/`Chunk` nodes; create/reuse the **vector index and the full-text index** (both are required: dense and sparse retrieval each target one). Merge entities across documents by `(label, normalized name)`; write edges with `{source_chunk, source_document}` provenance.
 
 Idempotent: re-running replaces documents by `source_path` (re-ingest a file by re-running the job). Replacement is a `DETACH DELETE` of the document's `Chunk` nodes plus every knowledge edge whose provenance points at those chunks — stale edges never survive a re-ingest. Entity *nodes* are not deleted (they may be referenced by edges from other documents); a re-run re-merges them by `(label, name)`.
+
+#### Run logs and stall watchdog
+
+Every record is written twice: to the container's stdout (`docker logs <container>`) **and** to `INGEST_LOG_FILE` (default `/app/logs/ingest.log`, bind-mounted to `eval/ingest-logs/`, git-ignored). If the attached `docker compose run` client dies while the container keeps running, the file sink keeps the run diagnosable — and the non-blocking stdout handler drops records instead of blocking on the dead pipe, which would otherwise wedge every worker thread.
+
+A watchdog thread guards against a genuinely wedged run: with no log activity for `INGEST_STALL_SECONDS` (default 600) it warns, and after a second consecutive window it force-exits the container with **exit code 75** so the failure is visible instead of hanging forever. A one-off `docker compose run --rm ingest` whose wrapper dies mid-run is also recoverable — the job is idempotent, so just re-run it.
 
 ---
 
@@ -256,6 +262,8 @@ open http://localhost:3000
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | ingest | Semantic chunking parameters (regulatory + security docs) |
 | `INGEST_CONCURRENCY` | ingest | Concurrent extraction LLM calls (default `6`, bounded for cloud rate limits) |
 | `EXTRACT_MAX_TOKENS` | ingest | Base completion budget per extraction attempt (default `8192`, doubled on each retry — reasoning models spend completion tokens on their reasoning channel before emitting JSON) |
+| `INGEST_STALL_SECONDS` | ingest | Stall watchdog: warn after this long with no log activity, force-exit (code 75) after 2× (default `600`, `0` disables) |
+| `INGEST_LOG_FILE` | ingest | File sink for run logs, bind-mounted to `eval/ingest-logs/` (default `/app/logs/ingest.log`) |
 | `AGENT_PORT` / `UI_PORT` | compose | Published ports (defaults `8001` / `3000`) |
 
 ---

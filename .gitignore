@@ -7,6 +7,9 @@ data/
 # evaluation traces contain retrieved corpus text (README: traces git-ignored)
 eval/traces/
 
+# ingest run logs (contain retrieved corpus text)
+eval/ingest-logs/
+
 # python
 __pycache__/
 *.pyc

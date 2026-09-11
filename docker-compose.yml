@@ -73,10 +73,13 @@ services:
       CHUNK_OVERLAP: ${CHUNK_OVERLAP:-150}
       INGEST_CONCURRENCY: ${INGEST_CONCURRENCY:-6}
       EXTRACT_MAX_TOKENS: ${EXTRACT_MAX_TOKENS:-8192}
+      INGEST_LOG_FILE: /app/logs/ingest.log
+      INGEST_STALL_SECONDS: ${INGEST_STALL_SECONDS:-600}
       SCHEMA_FILE: /app/schema/graph_schema.yaml
     volumes:
       - ./data:/app/data:ro
       - ./schema:/app/schema:ro
+      - ./eval/ingest-logs:/app/logs
     depends_on:
       neo4j:
         condition: service_healthy
