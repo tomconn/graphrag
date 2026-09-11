@@ -58,7 +58,7 @@ flowchart LR
     REACT -->|/api/chat SSE| FASTAPI
     FASTAPI -->|HTTP| LG
     LG -->|Cypher / Bolt| N4J
-    LG -->|Ollama Cloud API| LLM["GLM-2.3:cloud"]
+    LG -->|OpenAI-compatible API| OLLAMA["Ollama daemon (host :11434) → Ollama Cloud"]
     LG -->|embeddings, in-process| EMB["FastEmbed (ONNX)"]
     ING -->|writes nodes + vectors| N4J
     CORPUS --> ING
@@ -138,7 +138,7 @@ Runs as a compose service but only via `docker compose run --rm ingest`. Pipelin
    - *Semi-structured markdown* → heading-hierarchy chunking (keeps section paths for citations)
    - *Unstructured regulatory/security docs* → semantic chunking; preserve clause numbers as metadata
 3. **Embed** — FastEmbed (ONNX, int8-quantized) in-process on CPU: `mixedbread-ai/mxbai-embed-large-v1`, 1024-dim dense. No GPU/MPS — Docker on macOS can't reach Apple MPS, so the model must be CPU-viable; the quantized ONNX build is.
-4. **Extract** — `neo4j-graphrag` schema-guided entity/relation extraction with GLM-2.3:cloud, against the typed-label schema above.
+4. **Extract** — `neo4j-graphrag` schema-guided entity/relation extraction with `glm-5.3-flash:cloud`, against the typed-label schema above.
 5. **Write** — upsert `Document`/`Chunk` nodes; create/reuse the **vector index and the full-text index** (both are required: dense and sparse retrieval each target one). Merge entities across documents by `(label, name)`; write edges with `{source_chunk, source_document}` provenance.
 
 Idempotent: re-running replaces documents by `source_path` (re-ingest a file by re-running the job). Replacement is a `DETACH DELETE` of the document's `Chunk` nodes plus every knowledge edge whose provenance points at those chunks — stale edges never survive a re-ingest. Entity *nodes* are not deleted (they may be referenced by edges from other documents); a re-run re-merges them by `(label, name)`.
@@ -162,10 +162,23 @@ The graph's value comes from **cross-class edges**: e.g. `(CodeComponent)-[:MITI
 
 | Role | Model | Access | Notes |
 |---|---|---|---|
-| Reasoning / generation / extraction | **GLM-2.3:cloud** | Ollama Cloud REST API (OpenAI-compatible endpoint), API key via `OLLAMA_API_KEY` | Used by the agent (synthesis, routing, rewriting) and by the ingestion job (entity/relation extraction) |
+| Reasoning / generation / extraction | **`glm-5.3-flash:cloud`** | Local Ollama daemon (OpenAI-compatible), proxied to Ollama Cloud (Pro) | Used by the agent (synthesis, routing, rewriting) and by the ingestion job (entity/relation extraction) |
 | Embeddings | **`mixedbread-ai/mxbai-embed-large-v1`** | In-process via **FastEmbed** (int8-quantized ONNX) | 1024-dim dense, strong fine-grained matching for clause↔code citations. CPU-only and container-friendly — no GPU/MPS needed. **The agent and ingest job must use the identical model** so queries and chunks share one vector space (`EMBEDDING_MODEL` enforces this) |
 
-No LLM runs locally — the agent and ingestion job both call the Ollama Cloud API, so containers stay small and CPU-only. Embeddings run in-process on CPU (quantized ONNX); sparse retrieval is BM25 over the Neo4j full-text index, not a model.
+No LLM runs locally — the agent and ingestion job both call the Ollama API (local daemon proxying to Ollama Cloud), so containers stay small and CPU-only. Embeddings run in-process on CPU (quantized ONNX); sparse retrieval is BM25 over the Neo4j full-text index, not a model.
+
+### Accessing Ollama Cloud (Pro subscription)
+
+No API keys are managed by this project. The local Ollama daemon (port `11434`) proxies any `:cloud`-suffixed model up to Ollama Cloud, where the Pro subscription handles auth — the Pro API key lives in Ollama's own credential store (`~/.ollama`, set at sign-in) and clients never see it. Ollama accepts any bearer token for its API, so a dummy token suffices.
+
+**Container wiring (default path):**
+
+- `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1` — containers reach the host-side daemon via `host.docker.internal` (Rancher Desktop provides this)
+- `OLLAMA_API_KEY=ollama` — placeholder; the daemon accepts any token
+
+**Direct cloud path (fallback):** if the local daemon isn't running (e.g. CI, another machine), set `OLLAMA_BASE_URL=https://ollama.com/v1` and put a real Ollama Cloud API key in `OLLAMA_API_KEY`.
+
+**How the dev machine's Claude Code is wired (context, not part of the PoC runtime):** `~/.zshrc` exports `ANTHROPIC_BASE_URL=http://127.0.0.1:11434`, `ANTHROPIC_AUTH_TOKEN=ollama` and an empty `ANTHROPIC_API_KEY`, pointing Claude Code at the same local daemon; the default model is pinned in `~/.claude/settings.json` (`deepseek-v4-flash:cloud`). Two zsh aliases switch modes: `claude-local` (pins `glm-5.3-flash:cloud[1m]` via Ollama) and `claude-max` (unsets the exports and launches real Anthropic Claude). Same daemon as the PoC uses, different client.
 
 ---
 
@@ -190,7 +203,7 @@ graphrag/
 ### Prerequisites
 
 - macOS with [Rancher Desktop](https://rancherdesktop.io/) running (Docker Compose v2 compatible: enable *dockerd* as the container runtime)
-- An Ollama account with API access (Pro subscription) and an API key
+- Ollama installed, the local daemon running (`ollama serve`, port `11434`) and signed in to a Pro subscription (credentials in `~/.ollama` — no API key handling in this project)
 - 8 GB+ RAM available to Docker/Rancher Desktop (Neo4j is the heaviest service)
 
 ### Setup
@@ -201,7 +214,8 @@ git clone <repo-url> && cd graphrag
 
 # 2. Configure environment
 cp .env.example .env
-#    then edit .env — set OLLAMA_API_KEY and Neo4j credentials (see Configuration reference)
+#    then edit .env — set Neo4j credentials (OLLAMA_* defaults work via the
+#    local daemon; see "Accessing Ollama Cloud" under Models)
 
 # 3. Place source documents
 #    data/regulatory/   APRA CPS 234, CPS 230, ASIC, AUSTRAC, ACCC docs
@@ -227,9 +241,9 @@ open http://localhost:3000
 
 | Variable | Used by | Description |
 |---|---|---|
-| `OLLAMA_API_KEY` | agent, ingest | API key for the Ollama Cloud API |
-| `OLLAMA_BASE_URL` | agent, ingest | Ollama Cloud OpenAI-compatible base URL (default `https://ollama.com/v1`; confirm the exact endpoint at build time) |
-| `OLLAMA_MODEL` | agent, ingest | Model tag — `glm-2.3:cloud` |
+| `OLLAMA_API_KEY` | agent, ingest | Placeholder (`ollama`) via the local daemon — any token is accepted; a real key only needed for direct `https://ollama.com/v1` access |
+| `OLLAMA_BASE_URL` | agent, ingest | Default `http://host.docker.internal:11434/v1` (local daemon); fallback `https://ollama.com/v1` (direct cloud) |
+| `OLLAMA_MODEL` | agent, ingest | Model tag — `glm-5.3-flash:cloud` |
 | `NEO4J_URI` | agent, ingest | Bolt URI — `bolt://neo4j:7687` (in-network) |
 | `NEO4J_USER` / `NEO4J_PASSWORD` | compose, agent, ingest | Neo4j auth (set a real password; don't ship defaults) |
 | `EMBEDDING_MODEL` | agent, ingest | `mixedbread-ai/mxbai-embed-large-v1` — **must be identical for agent and ingest** (shared vector space) |
@@ -262,12 +276,12 @@ Success will be assessed against sample questions that **cross document classes*
 ## Limitations & risks
 
 - **Neo4j Community Edition** — no RBAC, no hot backups, single instance; acceptable for a PoC, not for shared production use.
-- **Cloud LLM dependency** — all generation goes through the Ollama Cloud API: network-dependent, adds latency, and means document content (including regulatory material) leaves the machine during extraction/retrieval. Assess before ingesting anything sensitive.
+- **Cloud LLM dependency** — all generation goes through Ollama Cloud (via the local daemon proxy): network-dependent, adds latency, and means document content (including regulatory material) leaves the machine during extraction/retrieval. Assess before ingesting anything sensitive.
 - **Extraction cost** — schema-guided extraction is the most expensive step: every chunk goes to the cloud LLM, and `data/` is unbounded (whatever is dropped in). Size the corpus before the first ingest run and keep a rough token-cost expectation in mind.
-- **Extraction quality** — the knowledge graph is only as good as GLM-2.3:cloud's schema-guided extraction; wrong or missing edges degrade Text2Cypher answers. The PoC includes manual spot-checks of extracted edges.
+- **Extraction quality** — the knowledge graph is only as good as `glm-5.3-flash:cloud`'s schema-guided extraction; wrong or missing edges degrade Text2Cypher answers. The PoC includes manual spot-checks of extracted edges.
 - **PDF conversion quality** — clause numbers must survive PDF→markdown conversion or regulatory citations break; spot-check converted markdown before ingesting (see pipeline step 1).
 - **Mac resource limits** — FastEmbed (CPU) + Neo4j + three containers together need headroom; Neo4j heap kept modest (CE, single user).
-- **Model naming** — confirm the exact Ollama Cloud model tag for GLM-2.3 at build time; `OLLAMA_MODEL` makes it a one-line change.
+- **Model availability** — `glm-5.3-flash:cloud` is the tag currently in use on this machine (a `[1m]` long-context variant also exists); confirm it's still offered under the Pro plan at build time. `OLLAMA_MODEL` makes switching a one-line change.
 
 ---
 
