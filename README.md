@@ -61,6 +61,7 @@ flowchart LR
     LG -->|OpenAI-compatible API| OLLAMA["Ollama daemon (host :11434) → Ollama Cloud"]
     LG -->|embeddings, in-process| EMB["FastEmbed (ONNX)"]
     ING -->|writes nodes + vectors| N4J
+    ING -->|embeddings, in-process| EMB
     CORPUS --> ING
 ```
 
@@ -111,7 +112,9 @@ Neo4j Community Edition (Docker image `neo4j:5-community`). Proposed schema:
 // Typed labels + named relationships (NOT a generic (:Entity {type}) blob):
 // a strongly-typed schema keeps the Text2Cypher prompt compact and the
 // generated Cypher constrained. Labels below are representative; the
-// authoritative schema lives with the extraction config.
+// authoritative schema is schema/graph_schema.yaml at the repo root,
+// mounted read-only into BOTH the agent (Text2Cypher prompt) and the
+// ingest job (extraction constraints) — one source of truth.
 (:CodeComponent {id, name, path})          // from source code
 (:Pattern        {id, name})               // from architecture / design docs
 (:Risk           {id, name})
@@ -126,7 +129,7 @@ Neo4j Community Edition (Docker image `neo4j:5-community`). Proposed schema:
 // Every knowledge edge carries provenance: {source_chunk, source_document}
 ```
 
-Entities are **merged across documents** into one global graph (deduplicated on `(label, name)`), so relationships can span document classes — e.g. a code component in `data/code/` connecting to a clause in `data/regulatory/`. Per-document scoping would make the PoC's traversal questions unanswerable.
+Entities are **merged across documents** into one global graph, so relationships can span document classes — e.g. a code component in `data/code/` connecting to a clause in `data/regulatory/`. Per-document scoping would make the PoC's traversal questions unanswerable. Merging is **lexical**: names are normalized (case, whitespace, `-`/`_`) and deduplicated on `(label, normalized name)`. Deterministic and idempotent, but name variants across document classes ("auth-service" vs "the authentication service") stay separate nodes and fragment some potential cross-class edges — a known, accepted limitation (see Limitations & risks).
 
 ### 4. Ingestion job (one-off)
 
@@ -134,12 +137,12 @@ Runs as a compose service but only via `docker compose run --rm ingest`. Pipelin
 
 1. **Parse** — walk `data/`, classify each file by document class (below). PDFs are converted to markdown first (PDF extraction library, e.g. Docling) — conversion quality determines whether clause numbers survive into citations, so spot-check the markdown for the regulatory docs before ingesting.
 2. **Chunk** — class-specific strategy:
-   - *Code* → symbol/AST-aware chunking (module, class, function boundaries)
+   - *Code* → symbol/AST-aware chunking via `tree-sitter-python` (module, class, function boundaries) — the corpus is Python-only
    - *Semi-structured markdown* → heading-hierarchy chunking (keeps section paths for citations)
    - *Unstructured regulatory/security docs* → semantic chunking; preserve clause numbers as metadata
 3. **Embed** — FastEmbed (ONNX, int8-quantized) in-process on CPU: `mixedbread-ai/mxbai-embed-large-v1`, 1024-dim dense. No GPU/MPS — Docker on macOS can't reach Apple MPS, so the model must be CPU-viable; the quantized ONNX build is.
 4. **Extract** — `neo4j-graphrag` schema-guided entity/relation extraction with `glm-5.3-flash:cloud`, against the typed-label schema above.
-5. **Write** — upsert `Document`/`Chunk` nodes; create/reuse the **vector index and the full-text index** (both are required: dense and sparse retrieval each target one). Merge entities across documents by `(label, name)`; write edges with `{source_chunk, source_document}` provenance.
+5. **Write** — upsert `Document`/`Chunk` nodes; create/reuse the **vector index and the full-text index** (both are required: dense and sparse retrieval each target one). Merge entities across documents by `(label, normalized name)`; write edges with `{source_chunk, source_document}` provenance.
 
 Idempotent: re-running replaces documents by `source_path` (re-ingest a file by re-running the job). Replacement is a `DETACH DELETE` of the document's `Chunk` nodes plus every knowledge edge whose provenance points at those chunks — stale edges never survive a re-ingest. Entity *nodes* are not deleted (they may be referenced by edges from other documents); a re-run re-merges them by `(label, name)`.
 
@@ -190,7 +193,8 @@ graphrag/
 ├── docker-compose.yml        # ui, agent, neo4j (long-running) + ingest (one-off)
 ├── .env.example              # template — copy to .env
 ├── data/                     # documents + code to ingest (git-ignored)
-├── eval/                     # golden question set + logged retrieval traces (in git)
+├── schema/                   # graph_schema.yaml — shared source of truth for ingest + agent
+├── eval/                     # golden question set (in git); traces/ (git-ignored)
 ├── ui/                       # React frontend + FastAPI backend, Dockerfile
 ├── agent/                    # LangGraph agent, Dockerfile
 └── ingest/                   # ingestion pipeline, Dockerfile
@@ -259,7 +263,7 @@ open http://localhost:3000
 The "hybrid is measurably better than vector-only" claim needs a baseline, so evaluation is **part of the PoC, not a deferred roadmap item**. Three pieces:
 
 1. **Golden question set** — the sample questions below (plus more as they come up) live in `eval/golden_questions.jsonl` with expected citations and expected graph paths, committed before the UI exists.
-2. **Retrieval traces** — every agent run logs one JSONL trace to `eval/traces/`: route chosen, rewritten query, queries issued, retrieved chunk ids + scores, traversed subgraph, iteration count, timings, and final citations. Traces are what make the comparison possible retroactively.
+2. **Retrieval traces** — every agent run logs one JSONL trace to `eval/traces/`: route chosen, rewritten query, queries issued, retrieved chunk ids + scores, traversed subgraph, iteration count, timings, and final citations. Traces are what make the comparison possible retroactively. **`eval/traces/` is git-ignored** — traces embed retrieved corpus text, which must never land in git history; only the golden question set is committed.
 3. **Baseline toggle** — `RETRIEVAL_MODE=vector` runs the same pipeline with graph traversal and the sparse side disabled. Every golden question is run under both modes; the comparison is hybrid vs vector-only on the same questions.
 
 Success will be assessed against sample questions that **cross document classes**, e.g.:
@@ -280,6 +284,7 @@ Success will be assessed against sample questions that **cross document classes*
 - **Extraction cost** — schema-guided extraction is the most expensive step: every chunk goes to the cloud LLM, and `data/` is unbounded (whatever is dropped in). Size the corpus before the first ingest run and keep a rough token-cost expectation in mind.
 - **Extraction quality** — the knowledge graph is only as good as `glm-5.3-flash:cloud`'s schema-guided extraction; wrong or missing edges degrade Text2Cypher answers. The PoC includes manual spot-checks of extracted edges.
 - **PDF conversion quality** — clause numbers must survive PDF→markdown conversion or regulatory citations break; spot-check converted markdown before ingesting (see pipeline step 1).
+- **Entity resolution is lexical** — cross-document merging matches on normalized `(label, name)` only; name variants across document classes stay separate nodes and fragment some cross-class edges. Accepted for the PoC (deterministic, idempotent); LLM-assisted reconciliation is a possible follow-up.
 - **Mac resource limits** — FastEmbed (CPU) + Neo4j + three containers together need headroom; Neo4j heap kept modest (CE, single user).
 - **Model availability** — `glm-5.3-flash:cloud` is the tag currently in use on this machine (a `[1m]` long-context variant also exists); confirm it's still offered under the Pro plan at build time. `OLLAMA_MODEL` makes switching a one-line change.
 
