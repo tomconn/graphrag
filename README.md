@@ -255,6 +255,7 @@ open http://localhost:3000
 | `RETRIEVAL_MODE` | agent | `hybrid` (default) or `vector` — the vector-only baseline used in evaluation |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | ingest | Semantic chunking parameters (regulatory + security docs) |
 | `INGEST_CONCURRENCY` | ingest | Concurrent extraction LLM calls (default `6`, bounded for cloud rate limits) |
+| `EXTRACT_MAX_TOKENS` | ingest | Base completion budget per extraction attempt (default `8192`, doubled on each retry — reasoning models spend completion tokens on their reasoning channel before emitting JSON) |
 | `AGENT_PORT` / `UI_PORT` | compose | Published ports (defaults `8001` / `3000`) |
 
 ---

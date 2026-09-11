@@ -165,6 +165,7 @@ class Extractor:
 
     def _call_llm(self, prompt: str) -> dict:
         last_error: Exception | None = None
+        base_tokens = int(os.environ.get("EXTRACT_MAX_TOKENS", "8192"))
         for attempt in range(1, MAX_ATTEMPTS + 1):
             messages = [{"role": "user", "content": prompt}]
             if attempt > 1:
@@ -173,14 +174,25 @@ class Extractor:
                     "content": ("Your previous reply was not valid JSON. "
                                 "Respond with ONLY the JSON object."),
                 })
+            # Reasoning models spend completion tokens on their reasoning
+            # channel before emitting content, so the budget doubles per
+            # attempt: a finish_reason=length call with empty content means
+            # thinking alone exhausted the budget, and the next attempt gets
+            # more room rather than repeating the same failure.
+            budget = base_tokens * (2 ** (attempt - 1))
             try:
                 response = self.client.chat.completions.create(
                     model=self._model,
                     messages=messages,
                     temperature=0,
-                    max_tokens=2048,
+                    max_tokens=budget,
                 )
-                content = response.choices[0].message.content or ""
+                choice = response.choices[0]
+                content = choice.message.content or ""
+                if choice.finish_reason == "length" and not content.strip():
+                    raise ValueError(
+                        "empty content with finish_reason=length: reasoning "
+                        "consumed the token budget")
                 return self._parse_json(content)
             except (json.JSONDecodeError, KeyError, IndexError, TypeError,
                     ValueError) as exc:

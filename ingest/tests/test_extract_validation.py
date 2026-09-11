@@ -26,7 +26,9 @@ class FakeCompletions:
             raise reply
         content = reply if isinstance(reply, str) else json.dumps(reply)
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=content),
+                finish_reason="stop")])
 
 
 def fake_extractor(schema_path, replies):
@@ -327,6 +329,38 @@ def test_invalid_json_after_max_attempts_raises(schema_path):
     with pytest.raises(ExtractionError):
         extractor.extract(make_chunk("text"), make_doc())
     assert len(extractor._client.chat.completions.calls) == 3
+
+
+def _canned_length_then_json_reply(valid_payload):
+    """A response that spent its whole token budget on reasoning (empty
+    content, finish_reason=length), then a valid one."""
+    exhausted = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content=""), finish_reason="length")])
+    return [exhausted, json.dumps(valid_payload)]
+
+
+def test_reasoning_exhausted_budget_is_retried_with_doubled_tokens(schema_path):
+    extractor = fake_extractor(schema_path, _canned_length_then_json_reply(
+        {"entities": [{"label": "System", "name": "A"}], "relations": []}))
+    entities, _ = extractor.extract(make_chunk("text"), make_doc())
+    assert labels_and_keys(entities) == [("System", "a")]
+    calls = extractor._client.chat.completions.calls
+    assert len(calls) == 2
+    # budget doubles per attempt (default base 8192)
+    assert calls[0]["max_tokens"] == 8192
+    assert calls[1]["max_tokens"] == 16384
+
+
+def test_reasoning_exhausted_budget_after_max_attempts_raises(schema_path):
+    exhausted = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content=""), finish_reason="length")])
+    extractor = fake_extractor(schema_path, [exhausted, exhausted, exhausted])
+    calls = extractor._client.chat.completions.calls
+    with pytest.raises(ExtractionError):
+        extractor.extract(make_chunk("text"), make_doc())
+    assert [c["max_tokens"] for c in calls] == [8192, 16384, 32768]
 
 
 def test_parse_json_variants(schema_path):

@@ -72,6 +72,7 @@ services:
       CHUNK_SIZE: ${CHUNK_SIZE:-900}
       CHUNK_OVERLAP: ${CHUNK_OVERLAP:-150}
       INGEST_CONCURRENCY: ${INGEST_CONCURRENCY:-6}
+      EXTRACT_MAX_TOKENS: ${EXTRACT_MAX_TOKENS:-8192}
       SCHEMA_FILE: /app/schema/graph_schema.yaml
     volumes:
       - ./data:/app/data:ro
