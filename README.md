@@ -10,7 +10,7 @@ The whole stack runs locally on a Mac (Rancher Desktop) with three Docker Compos
 
 A one-off ingestion job loads and extracts the source documents into the graph.
 
-> **Status:** planning / greenfield — no code exists yet. This README documents the intended design; commands and ports are the contract the implementation will follow.
+> **Status:** implemented (all three containers + ingest pipeline; live-validated against the synthetic corpus with real Neo4j 5 and real extraction, two full runs incl. an idempotent re-ingest). Commands and ports below are the contract the implementation follows.
 
 ---
 
@@ -254,6 +254,7 @@ open http://localhost:3000
 | `EMBEDDING_DIM` | agent, ingest | `1024` — must match the vector index |
 | `RETRIEVAL_MODE` | agent | `hybrid` (default) or `vector` — the vector-only baseline used in evaluation |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | ingest | Semantic chunking parameters (regulatory + security docs) |
+| `INGEST_CONCURRENCY` | ingest | Concurrent extraction LLM calls (default `6`, bounded for cloud rate limits) |
 | `AGENT_PORT` / `UI_PORT` | compose | Published ports (defaults `8001` / `3000`) |
 
 ---

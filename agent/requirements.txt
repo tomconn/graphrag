@@ -1,0 +1,7 @@
+fastapi>=0.141,<1
+uvicorn>=0.52,<1
+langgraph>=1.2,<2
+neo4j-graphrag[neo4j]>=1.19,<2
+fastembed>=0.8,<1
+openai>=3.13,<4
+pyyaml>=6.0,<7

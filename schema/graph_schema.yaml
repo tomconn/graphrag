@@ -1,0 +1,151 @@
+# Authoritative graph schema — single source of truth.
+# Mounted read-only into BOTH the agent container (Text2Cypher prompt) and
+# the ingest container (schema-guided extraction constraints).
+# See README section "3. Neo4j GraphRAG store".
+
+version: 1
+
+retrieval_layer:
+  document:
+    label: Document
+    key: id
+    properties:
+      id: string      # stable id derived from source_path
+      title: string
+      type: string    # architecture | regulatory | security | code
+      source_path: string
+  chunk:
+    label: Chunk
+    key: id
+    properties:
+      id: string
+      text: string
+      embedding: list[float]
+      section: string        # heading path for markdown; "Clause N" for regulatory; path#symbol for code
+      clause: string         # native clause number, regulatory only ("" otherwise)
+      code_ref: string       # "path#symbol[:lines]" for code chunks; "" otherwise
+    indexes:
+      vector:
+        name: chunk_embeddings
+        property: embedding
+        dim: 1024            # must equal EMBEDDING_DIM
+        cosine: true
+      fulltext:
+        name: chunk_text_ft
+        property: text
+
+knowledge_layer:
+  # Entity nodes are merged across documents by (label, normalized name).
+  # key = the merge key; normalization: lowercase, collapse whitespace, strip -/_
+  node_labels:
+    System:
+      key: name
+      properties: [name]
+      description: A platform, service or legacy system (e.g. "Payment Order Processing Platform")
+    CodeComponent:
+      key: name
+      properties: [name, path]
+      description: A module, class or named component identified in source code
+    ServiceDomain:
+      key: name
+      properties: [name]
+      description: A BIAN service domain (release 14.0.0 naming, e.g. "PaymentOrderInitiation")
+    Pattern:
+      key: name
+      properties: [name]
+      description: A named architecture/design/integration/distributed/agentic pattern (e.g. "Saga", "Transactional Outbox")
+    Principle:
+      key: name
+      properties: [name]
+      description: An architecture or governance principle
+    Risk:
+      key: name
+      properties: [name]
+      description: An operational or security risk (e.g. "unauthorised access", "change-induced outage")
+    Control:
+      key: name
+      properties: [name, standard]
+      description: A security or process control (e.g. "multi-factor authentication", "audit logging")
+    Obligation:
+      key: name
+      properties: [name, regulator]
+      description: A compliance obligation derived from regulation (e.g. "72-hour incident notification")
+    CpsClause:
+      key: id
+      properties: [id, doc, number, title]
+      description: A specific clause of a prudential standard (id = "{doc}:{number}", e.g. "CPS 234:27")
+
+  relationships:
+    IMPLEMENTS:
+      source: [System, Control]
+      target: [ServiceDomain, Obligation]
+      description: A system implements a BIAN service domain; a control implements an obligation
+    DEPENDS_ON:
+      source: [System]
+      target: [System]
+      description: Runtime or data dependency between platforms
+    USES_PATTERN:
+      source: [System]
+      target: [Pattern]
+      description: A platform applies a named pattern
+    PART_OF:
+      source: [CodeComponent]
+      target: [System]
+      description: A code component belongs to a platform
+    MITIGATES:
+      source: [Control, CodeComponent, Pattern]
+      target: [Risk]
+      description: A control, code component or pattern mitigates a risk
+    ADDRESSES:
+      source: [Pattern]
+      target: [Risk]
+      description: A design pattern addresses a risk class
+    GOVERNED_BY:
+      source: [Risk, Obligation]
+      target: [CpsClause]
+      description: A risk or obligation is governed by a regulatory clause
+    DERIVES_FROM:
+      source: [Obligation]
+      target: [CpsClause]
+      description: An obligation derives from a specific clause
+
+  edge_provenance:
+    source_chunk: string     # chunk id the edge was extracted from
+    source_document: string  # document id the edge was extracted from
+
+extraction:
+  per_class:
+    architecture:
+      allowed_labels: [System, ServiceDomain, Pattern, Principle, Risk, Control, CpsClause]
+      allowed_relationships: [IMPLEMENTS, DEPENDS_ON, USES_PATTERN, MITIGATES, ADDRESSES, GOVERNED_BY]
+      guidance: >-
+        Extract named platforms, BIAN service domains, patterns, principles, risks and
+        controls. Cross-references to APRA clauses (e.g. "CPS 234 clause 27", "CPS 230
+        change management clause") are CpsClause nodes; a risk the text says a control
+        or pattern mitigates becomes MITIGATES/ADDRESSES.
+    regulatory:
+      allowed_labels: [CpsClause, Obligation, Control, Risk]
+      allowed_relationships: [GOVERNED_BY, IMPLEMENTS, DERIVES_FROM]
+      guidance: >-
+        Each clause heading ("Clause N") yields one CpsClause with id "{doc}:{N}" and
+        its stated requirement as title. Extract the obligations the clause imposes and
+        the controls it mandates (Control.IMPLEMENTS Obligation, Obligation.GOVERNED_BY
+        CpsClause, Risk.GOVERNED_BY CpsClause).
+    security:
+      allowed_labels: [Control, Risk, Obligation, CpsClause]
+      allowed_relationships: [MITIGATES, IMPLEMENTS, GOVERNED_BY]
+      guidance: >-
+        Extract vulnerabilities/weakness classes as Risk, requirements and practices as
+        Control. Cross-references to regulatory clauses become GOVERNED_BY edges.
+    code:
+      allowed_labels: [CodeComponent, System, Risk, Control]
+      allowed_relationships: [PART_OF, MITIGATES, IMPLEMENTS]
+      guidance: >-
+        Extract modules/classes as CodeComponent (name = symbol, path = file path).
+        Extract platform names only where the code or docstrings name them explicitly.
+        Security-relevant behaviour (input validation, auth checks, audit logging)
+        yields MITIGATES edges to the corresponding Risk or Control.
+  normalization:
+    lowercase: true
+    collapse_whitespace: true
+    strip_chars: ["-", "_"]

@@ -1,0 +1,84 @@
+services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: graphrag-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1g
+      NEO4J_server_memory_pagecache_size: 512m
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  agent:
+    build: ./agent
+    container_name: graphrag-agent
+    environment:
+      NEO4J_URI: ${NEO4J_URI}
+      NEO4J_USER: ${NEO4J_USER}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY}
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      EMBEDDING_DIM: ${EMBEDDING_DIM}
+      RETRIEVAL_MODE: ${RETRIEVAL_MODE:-hybrid}
+      SCHEMA_FILE: /app/schema/graph_schema.yaml
+      TRACE_DIR: /app/eval/traces
+    ports:
+      - "${AGENT_PORT:-8001}:8001"
+    volumes:
+      - ./schema:/app/schema:ro
+      - ./eval:/app/eval
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
+  ui:
+    build: ./ui
+    container_name: graphrag-ui
+    environment:
+      AGENT_URL: http://agent:8001
+      DATA_DIR: /app/data
+    ports:
+      - "${UI_PORT:-3000}:3000"
+      - "${FASTAPI_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      - agent
+
+  ingest:
+    build: ./ingest
+    profiles: ["ingest"]
+    environment:
+      NEO4J_URI: ${NEO4J_URI}
+      NEO4J_USER: ${NEO4J_USER}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY}
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      EMBEDDING_DIM: ${EMBEDDING_DIM}
+      CHUNK_SIZE: ${CHUNK_SIZE:-900}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-150}
+      INGEST_CONCURRENCY: ${INGEST_CONCURRENCY:-6}
+      SCHEMA_FILE: /app/schema/graph_schema.yaml
+    volumes:
+      - ./data:/app/data:ro
+      - ./schema:/app/schema:ro
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
+volumes:
+  neo4j-data:

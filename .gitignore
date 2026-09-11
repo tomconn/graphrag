@@ -1,0 +1,24 @@
+# secrets
+.env
+
+# corpus — never committed (see README: data/ is git-ignored)
+data/
+
+# evaluation traces contain retrieved corpus text (README: traces git-ignored)
+eval/traces/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# node
+node_modules/
+dist/
+
+# misc
+.DS_Store
+*.log
