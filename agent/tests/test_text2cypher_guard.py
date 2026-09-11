@@ -125,6 +125,95 @@ def test_empty_statement_rejected():
             text2cypher._clean_statement(raw)
 
 
+# ------------------------------------------------ duplicate RETURN column repair
+
+def test_duplicate_return_aliases_are_renamed():
+    """Neo4j rejects duplicate result columns; the second and later
+    occurrences are renamed so the first keeps its name."""
+    statement = (
+        "MATCH (o:Obligation)<-[r1]-(c:CpsClause)<-[r2]-(s:System) "
+        "RETURN 'Obligation' AS kind, o.name AS name, s.name AS implementer, "
+        "r1.source_chunk AS source_chunk, r2.source_chunk AS implementer, "
+        "r2.source_document AS source_document LIMIT 10"
+    )
+    fixed = text2cypher._clean_statement(statement)
+    assert "s.name AS implementer," in fixed
+    assert "r2.source_chunk AS implementer_2" in fixed
+    assert "r1.source_chunk AS source_chunk" in fixed
+
+
+def test_dedupe_triple_duplicate_and_avoids_existing_names():
+    statement = "MATCH (n) RETURN n.x AS a, n.y AS a, n.z AS a, n.w AS a_2"
+    fixed = text2cypher._dedupe_return_aliases(statement)
+    assert fixed == (
+        "MATCH (n) RETURN n.x AS a, n.y AS a_2, n.z AS a_3, n.w AS a_2_2"
+    )
+
+
+def test_dedupe_ignores_commas_and_literals():
+    """Commas and 'AS'-looking text inside literals or function calls are not
+    item boundaries; a unique-alias clause passes through unchanged."""
+    statement = (
+        "MATCH (n) WHERE n.note = 'a, b' "
+        "RETURN collect(n.tag) AS tags, 'AS x' AS note, n LIMIT 5"
+    )
+    assert text2cypher._dedupe_return_aliases(statement) == statement
+
+
+def test_dedupe_scans_only_the_last_return_clause():
+    statement = (
+        "MATCH (a) RETURN a.x AS kind UNION MATCH (b) RETURN b.y AS kind"
+    )
+    assert text2cypher._dedupe_return_aliases(statement) == statement
+
+
+def test_dedupe_handles_multiline_and_order_by():
+    statement = (
+        "MATCH (n) RETURN n.a AS x,\n"
+        "  n.b AS x\n"
+        "ORDER BY x LIMIT 5"
+    )
+    fixed = text2cypher._dedupe_return_aliases(statement)
+    assert "n.b AS x_2" in fixed
+
+
+def test_run_text2cypher_repairs_duplicate_alias_without_llm_retry():
+    """A duplicate-alias statement is fixed deterministically and runs on the
+    first attempt — no second LLM call is spent on it."""
+    driver = FakeDriver(rows=[{"source_chunk": "c1"}])
+    result, calls = run_with_replies(
+        ["MATCH (n) RETURN n.x AS k, n.y AS k"], driver)
+    assert result is not None
+    assert result["cypher"] == "MATCH (n) RETURN n.x AS k, n.y AS k_2"
+    assert result["rows"] == [{"source_chunk": "c1"}]
+    assert len(calls) == 1
+
+
+def test_empty_output_retry_prompt_is_actionable():
+    driver = FakeDriver(rows=[{"x": 1}])
+    result, calls = run_with_replies(
+        ["   ", "MATCH (n) RETURN n"], driver)
+    assert result is not None
+    assert "contained no Cypher statement" in calls[1]
+    assert "ONLY the Cypher query" in calls[1]
+
+
+def test_retry_prompt_error_is_trimmed():
+    driver = FakeDriver(rows=[{"x": 1}])
+
+    class VerboseErrorDriver(FakeDriver):
+        def session(self, default_access_mode=None):
+            raise RuntimeError("x" * 1000)
+
+    result, calls = run_with_replies(
+        ["MATCH (bad", "MATCH (n) RETURN n", "MATCH (n) RETURN n"],
+        VerboseErrorDriver())
+    assert result is None
+    assert len(calls) == text2cypher.MAX_ATTEMPTS
+    assert calls[1].count("x" * 1000) == 0
+    assert "[truncated]" in calls[1]
+
+
 # ------------------------------------------------------- run_text2cypher (fakes)
 
 class FakeRecord:

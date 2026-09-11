@@ -97,10 +97,16 @@ One JSON object per line, one file per run:
 ## Text2Cypher contract (agent)
 
 - Prompt: question + `knowledge_layer` section of `SCHEMA_FILE` (labels, relationship
-  triples with descriptions, provenance note) + previous error if retrying.
+  triples with descriptions, provenance note) + previous error if retrying. The retry
+  context (previous statement + error) is trimmed to 400 chars so a verbose driver error
+  cannot crowd out the task; an empty LLM response gets an explicit
+  "respond with ONLY the Cypher query" retry message.
 - Execution: Neo4j session in **read** mode; `EXPLAIN` the statement first (validation),
   then run. Retry with the driver error appended, max 3 attempts; on final failure fall
   back to hybrid retrieval.
+- Duplicate RETURN column names are repaired deterministically before execution (the
+  later duplicate alias is renamed `name` → `name_2`, first occurrence keeps its name)
+  instead of spending a retry on the Neo4j syntax error.
 - Any generated statement containing `CREATE|MERGE|DELETE|SET|DETACH|DROP|REMOVE|CALL|LOAD|FOREACH`
   (case-insensitive, scanned with string literals masked) is rejected before execution.
 - Any generated statement containing a `https?://` URL literal is rejected outright

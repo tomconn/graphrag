@@ -40,6 +40,12 @@ _URL_LITERAL_RE = re.compile(r"https?://", re.IGNORECASE)
 MAX_ATTEMPTS = 3
 MAX_ROWS = 25
 MAX_ROW_TEXT_CHARS = 600
+# Neo4j rejects a RETURN with two columns of the same name (a common LLM slip
+# when an alias and the provenance note collide, e.g. two `AS implementer`
+# columns). Duplicate explicit aliases are renamed deterministically instead
+# of spending a retry on it.
+_NO_RETRY_ERRORS = ("empty Cypher statement",)
+MAX_PROMPT_ERROR_CHARS = 400
 
 
 def load_schema(schema_file: str | None = None) -> dict[str, Any]:
@@ -94,6 +100,8 @@ def _build_prompt(
         "RULES:\n"
         "- READ-ONLY query only: never use CREATE, MERGE, DELETE, SET, DETACH, "
         "DROP, REMOVE or CALL.\n"
+        "- Every RETURN column must have a unique alias (AS ...); duplicate "
+        "column names are an error.\n"
         "- Return at most 25 rows (add a LIMIT).\n"
         "- Use only the node labels and relationship types above.\n"
         "- Output ONLY the Cypher query, no explanation, no code fences.\n\n"
@@ -116,6 +124,98 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
+def _mask_string_literals(statement: str) -> str:
+    """Same-length mask: string-literal contents become spaces (quotes too), so
+    structural analysis — keyword positions, top-level commas, paren depth —
+    never trips over quoted text, and positions still index the original."""
+    out = list(statement)
+    quote: str | None = None
+    i = 0
+    while i < len(statement):
+        ch = statement[i]
+        if quote:
+            out[i] = " "
+            if ch == "\\" and i + 1 < len(statement):
+                out[i + 1] = " "
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        i += 1
+    return "".join(out)
+
+
+_ALIAS_RE = re.compile(r"\bAS\s+(\w+)(\s*)$", re.IGNORECASE)
+# Ends the RETURN projection. The (?<!\.) keeps property access like
+# `n.limit` / `n.skip` from matching.
+_PROJECTION_END_RE = re.compile(
+    r"(?<!\.)\b(ORDER\s+BY|LIMIT|SKIP)\b", re.IGNORECASE
+)
+
+
+def _dedupe_return_aliases(statement: str) -> str:
+    """Rename duplicate explicit RETURN aliases so column names are unique.
+
+    Neo4j rejects duplicate result columns; the provenance guidance makes
+    collisions likely (an alias like `implementer` next to a second
+    `r.x AS implementer`). Only the LAST top-level RETURN clause is scanned
+    and only later duplicates are renamed (`name` -> `name_2`), so a column
+    downstream code reads by name keeps its name.
+    """
+    masked = _mask_string_literals(statement)
+    return_matches = list(re.finditer(r"\bRETURN\b", masked, re.IGNORECASE))
+    if not return_matches:
+        return statement
+    clause_start = return_matches[-1].start()
+    end = _PROJECTION_END_RE.search(masked, clause_start)
+    end = end.start() if end else len(statement)
+    clause_masked = masked[clause_start:end]
+
+    # Item boundaries: commas at paren depth 0 (paren/commas inside literals
+    # are already masked out).
+    items: list[tuple[int, int]] = []
+    item_start = 0
+    depth = 0
+    for idx, ch in enumerate(clause_masked):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            items.append((item_start, idx))
+            item_start = idx + 1
+    items.append((item_start, len(clause_masked)))
+
+    seen: set[str] = set()
+    replacements: list[tuple[int, int, str]] = []
+    for lo, hi in items:
+        item = clause_masked[lo:hi]
+        match = _ALIAS_RE.search(item)
+        if not match:
+            continue
+        alias = match.group(1)
+        if alias not in seen:
+            seen.add(alias)
+            continue
+        counter = 2
+        while f"{alias}_{counter}" in seen:
+            counter += 1
+        new_alias = f"{alias}_{counter}"
+        seen.add(new_alias)
+        # Keep the trailing whitespace (often the newline before ORDER BY).
+        replacement = f"AS {new_alias}{match.group(2)}"
+        replacements.append((clause_start + lo + match.start(), clause_start + hi, replacement))
+
+    if not replacements:
+        return statement
+    out = statement
+    for start, end, text in reversed(replacements):
+        out = out[:start] + text + out[end:]
+    return out
+
+
 def _clean_statement(cypher: str) -> str:
     """Strip fences and a trailing semicolon; reject write keywords
     (string-literal contents are excluded from the keyword scan) and URL
@@ -130,7 +230,7 @@ def _clean_statement(cypher: str) -> str:
     masked = _STRING_LITERAL_RE.sub("''", statement)
     if _WRITE_KEYWORDS.search(masked):
         raise ValueError("statement contains a write keyword; read-only Cypher only")
-    return statement
+    return _dedupe_return_aliases(statement)
 
 
 def _validate_and_run(
@@ -179,6 +279,11 @@ def rows_to_text(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _trim(text: str, limit: int = MAX_PROMPT_ERROR_CHARS) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[:limit] + " [truncated]"
+
+
 def run_text2cypher(
     driver: neo4j.Driver,
     question: str,
@@ -197,12 +302,18 @@ def run_text2cypher(
         try:
             statement = _clean_statement(raw)
         except ValueError as exc:
-            previous_cypher, previous_error = raw.strip(), str(exc)
+            message = str(exc)
+            if message in _NO_RETRY_ERRORS:
+                message = (
+                    "The previous response contained no Cypher statement. "
+                    "Respond with ONLY the Cypher query, no other text."
+                )
+            previous_cypher, previous_error = _trim(raw) or "(no output)", message
             _log.warning("text2cypher attempt %d rejected: %s", attempt, exc)
             continue
         rows, error = _validate_and_run(driver, statement)
         if error:
-            previous_cypher, previous_error = statement, error
+            previous_cypher, previous_error = statement, _trim(error)
             _log.warning("text2cypher attempt %d failed: %s", attempt, error)
             continue
         _log.info("text2cypher succeeded after %d attempt(s)", attempt)
