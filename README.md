@@ -259,12 +259,17 @@ open http://localhost:3000
 | `EMBEDDING_MODEL` | agent, ingest | `mixedbread-ai/mxbai-embed-large-v1` — **must be identical for agent and ingest** (shared vector space) |
 | `EMBEDDING_DIM` | agent, ingest | `1024` — must match the vector index |
 | `RETRIEVAL_MODE` | agent | `hybrid` (default) or `vector` — the vector-only baseline used in evaluation |
+| `AGENT_MAX_TOKENS` | agent | Completion budget per agent LLM call, default `4096` (unbounded-consumption guard; generous enough for a reasoning model's answer plus its thinking) |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | ingest | Semantic chunking parameters (regulatory + security docs) |
 | `INGEST_CONCURRENCY` | ingest | Concurrent extraction LLM calls (default `6`, bounded for cloud rate limits) |
 | `EXTRACT_MAX_TOKENS` | ingest | Base completion budget per extraction attempt (default `8192`, doubled on each retry — reasoning models spend completion tokens on their reasoning channel before emitting JSON) |
 | `INGEST_STALL_SECONDS` | ingest | Stall watchdog: warn after this long with no log activity, force-exit (code 75) after 2× (default `600`, `0` disables) |
 | `INGEST_LOG_FILE` | ingest | File sink for run logs, bind-mounted to `eval/ingest-logs/` (default `/app/logs/ingest.log`) |
-| `AGENT_PORT` / `UI_PORT` | compose | Published ports (defaults `8001` / `3000`) |
+| `AGENT_PORT` / `UI_PORT` | compose | Published ports (defaults `8001` / `3000`) — **all published ports are bound to `127.0.0.1`** |
+| `CORS_ORIGINS` | ui backend | Browser origins allowed to call the UI backend (comma-separated, default `http://localhost:3000,http://127.0.0.1:3000`; never `*`) |
+
+Security posture, threat model (MITRE ATLAS / OWASP LLM Top 10) and the
+accepted PoC risks are documented in **[docs/security.md](docs/security.md)**.
 
 ---
 

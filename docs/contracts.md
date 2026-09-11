@@ -101,8 +101,11 @@ One JSON object per line, one file per run:
 - Execution: Neo4j session in **read** mode; `EXPLAIN` the statement first (validation),
   then run. Retry with the driver error appended, max 3 attempts; on final failure fall
   back to hybrid retrieval.
-- Any generated statement containing `CREATE|MERGE|DELETE|SET|DETACH|DROP|REMOVE|CALL`
-  (case-insensitive) is rejected before execution.
+- Any generated statement containing `CREATE|MERGE|DELETE|SET|DETACH|DROP|REMOVE|CALL|LOAD|FOREACH`
+  (case-insensitive, scanned with string literals masked) is rejected before execution.
+- Any generated statement containing a `https?://` URL literal is rejected outright
+  (SSRF/exfiltration vector; scanned on the unmasked statement — in valid Cypher a URL
+  can only appear inside a string literal). See docs/security.md.
 
 ## Coding conventions
 

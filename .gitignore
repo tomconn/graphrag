@@ -24,4 +24,4 @@ dist/
 
 # misc
 .DS_Store
-*.log
+*.log.coverage

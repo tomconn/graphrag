@@ -19,6 +19,11 @@ from pydantic import BaseModel
 
 AGENT_URL = os.environ.get("AGENT_URL", "http://agent:8001")
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data")).resolve()
+# Browser origins allowed to call this backend (comma-separated). Localhost
+# only by default — a "*" here would let any site the user visits read
+# internal architecture documents through /api/source.
+DEFAULT_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+CORS_ORIGINS = os.environ.get("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",")
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 
@@ -28,9 +33,9 @@ log = logging.getLogger("ui")
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # PoC: the browser talks only to this backend
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[origin.strip() for origin in CORS_ORIGINS if origin.strip()],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 

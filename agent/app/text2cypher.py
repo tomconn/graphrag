@@ -27,10 +27,16 @@ _DEFAULT_SCHEMA_FILE = "/app/schema/graph_schema.yaml"
 # scanned outside string literals so text like `WHERE n.note = 'please CALL back'`
 # is not a false positive. The mask replaces literal contents (escaped quotes
 # included) with empty strings, so keywords inside values are ignored.
+# LOAD and FOREACH are rejected beyond the bare write-keyword list: LOAD CSV
+# FROM '<url>' is legal in a read-only session but makes the agent issue
+# outbound requests (SSRF), and FOREACH nests write clauses. URL literals are
+# rejected outright for the same reason — no generated query ever needs one.
 _STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
 _WRITE_KEYWORDS = re.compile(
-    r"\b(CREATE|MERGE|DELETE|SET|DETACH|DROP|REMOVE|CALL)\b", re.IGNORECASE
+    r"\b(CREATE|MERGE|DELETE|SET|DETACH|DROP|REMOVE|CALL|LOAD|FOREACH)\b",
+    re.IGNORECASE,
 )
+_URL_LITERAL_RE = re.compile(r"https?://", re.IGNORECASE)
 MAX_ATTEMPTS = 3
 MAX_ROWS = 25
 MAX_ROW_TEXT_CHARS = 600
@@ -112,11 +118,15 @@ def _strip_code_fences(text: str) -> str:
 
 def _clean_statement(cypher: str) -> str:
     """Strip fences and a trailing semicolon; reject write keywords
-    (string-literal contents are excluded from the scan).
+    (string-literal contents are excluded from the keyword scan) and URL
+    literals (scanned on the unmasked statement — in valid Cypher a URL can
+    only appear inside a string literal, so masking would hide it).
     """
     statement = _strip_code_fences(cypher).strip().rstrip(";").strip()
     if not statement:
         raise ValueError("empty Cypher statement")
+    if _URL_LITERAL_RE.search(statement):
+        raise ValueError("statement contains a URL literal; not permitted")
     masked = _STRING_LITERAL_RE.sub("''", statement)
     if _WRITE_KEYWORDS.search(masked):
         raise ValueError("statement contains a write keyword; read-only Cypher only")

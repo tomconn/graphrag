@@ -8,8 +8,8 @@ services:
       NEO4J_server_memory_heap_max__size: 1g
       NEO4J_server_memory_pagecache_size: 512m
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
     volumes:
       - neo4j-data:/data
     healthcheck:
@@ -35,7 +35,7 @@ services:
       SCHEMA_FILE: /app/schema/graph_schema.yaml
       TRACE_DIR: /app/eval/traces
     ports:
-      - "${AGENT_PORT:-8001}:8001"
+      - "127.0.0.1:${AGENT_PORT:-8001}:8001"
     volumes:
       - ./schema:/app/schema:ro
       - ./eval:/app/eval
@@ -50,8 +50,8 @@ services:
       AGENT_URL: http://agent:8001
       DATA_DIR: /app/data
     ports:
-      - "${UI_PORT:-3000}:3000"
-      - "${FASTAPI_PORT:-8000}:8000"
+      - "127.0.0.1:${UI_PORT:-3000}:3000"
+      - "127.0.0.1:${FASTAPI_PORT:-8000}:8000"
     volumes:
       - ./data:/app/data:ro
     depends_on:

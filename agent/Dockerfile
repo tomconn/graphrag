@@ -10,6 +10,18 @@ ENV SCHEMA_FILE=/app/schema/graph_schema.yaml \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Supply-chain pinning (OWASP LLM Supply Chain / A05): pre-bake the FastEmbed
+# model into the image at build time and run with HF_HUB_OFFLINE=1, so the
+# runtime never pulls from the Hugging Face hub on first query. Changing
+# EMBEDDING_MODEL therefore requires a rebuild:
+#   docker compose build --build-arg EMBEDDING_MODEL=<new-model> agent
+# (or set HF_HUB_OFFLINE=0 in the environment to allow an unpinned fetch).
+ARG EMBEDDING_MODEL=mixedbread-ai/mxbai-embed-large-v1
+# Download during build (online), then lock the runtime offline.
+ENV EMBEDDING_MODEL=${EMBEDDING_MODEL}
+RUN HF_HUB_OFFLINE=0 python -c "import os; from fastembed import TextEmbedding; next(TextEmbedding(model_name=os.environ['EMBEDDING_MODEL']).embed(['warmup']))"
+ENV HF_HUB_OFFLINE=1
+
 COPY app ./app
 
 EXPOSE 8001

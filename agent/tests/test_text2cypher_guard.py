@@ -48,6 +48,38 @@ def test_write_keyword_rejection_is_case_insensitive():
             text2cypher._clean_statement(statement)
 
 
+def test_load_and_foreach_are_rejected():
+    """LOAD CSV (SSRF via arbitrary URL) and FOREACH (write loop) are not in
+    the original keyword set — they must be rejected too."""
+    # LOAD CSV always carries a URL literal, so the URL check (which runs
+    # first on the unmasked statement) rejects it before the keyword scan.
+    for statement in (
+        "LOAD CSV FROM 'https://evil.example/x.csv' AS row RETURN row",
+        "LOAD CSV WITH HEADERS FROM 'http://internal/x' AS row MATCH (n) RETURN n",
+    ):
+        with pytest.raises(ValueError, match="URL literal"):
+            text2cypher._clean_statement(statement)
+    for statement in (
+        "MATCH (n) FOREACH (x IN range(1,5) | CREATE (:Thing))",
+        "MATCH (n) FOREACH (_ IN n.items | SET n.done = true)",
+    ):
+        with pytest.raises(ValueError, match="write keyword"):
+            text2cypher._clean_statement(statement)
+
+
+def test_url_literal_is_rejected():
+    """A URL literal is a data-exfiltration / SSRF vector even in an
+    otherwise read-only statement, so it is rejected on its own."""
+    for statement in (
+        "MATCH (n) RETURN 'https://attacker.example/collect'",
+        "LOAD CSV FROM 'http://169.254.169.254/latest' AS row RETURN row",
+        'MATCH (n) WHERE n.url = "https://x.example" RETURN n',
+        "RETURN 'HTTPS://UPPERCASE.EXAMPLE' + n.name",
+    ):
+        with pytest.raises(ValueError, match="URL literal"):
+            text2cypher._clean_statement(statement)
+
+
 def test_word_boundary_aware_no_false_positives():
     """Property names and labels that merely contain keyword letters must
     pass (the regex is \\b-anchored)."""
