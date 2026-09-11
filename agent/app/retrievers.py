@@ -23,7 +23,7 @@ RRF_K = 60
 CHUNK_PROPS = ("id", "text", "section", "clause", "code_ref")
 
 SPARSE_CYPHER = (
-    "CALL db.index.fulltext.queryNodes($index_name, $query) "
+    "CALL db.index.fulltext.queryNodes($index_name, $query_text) "
     "YIELD node, score "
     "RETURN node { .id, .text, .section, .clause, .code_ref } AS node, score "
     "ORDER BY score DESC LIMIT $top_k"
@@ -78,12 +78,17 @@ class BM25Retriever(Retriever):
             return RawSearchResult(records=[])
 
         def work(tx: neo4j.Transaction) -> list[neo4j.Record]:
+            # Explicit parameters dict: the driver's run(query, parameters,
+            # **kwargs) signature rejects a kwarg named `query` ("multiple
+            # values for argument 'query'").
             return list(
                 tx.run(
                     SPARSE_CYPHER,
-                    index_name=self.index_name,
-                    query=query,
-                    top_k=top_k,
+                    parameters={
+                        "index_name": self.index_name,
+                        "query_text": query,
+                        "top_k": top_k,
+                    },
                 )
             )
 

@@ -126,8 +126,16 @@ def make_fake_driver(records):
         def __init__(self):
             self.queries = []
 
-        def run(self, cypher, **kwargs):
-            self.queries.append((cypher, kwargs))
+        def run(self, cypher, parameters=None, **kwargs):
+            # Mirror the real driver signature: a parameter named `query`
+            # passed in kwargs collides with this method's first argument
+            # ("got multiple values for argument 'query'") — the exact
+            # production bug the BM25 retriever once had.
+            if parameters is None:
+                parameters = kwargs
+            else:
+                assert not kwargs, "cannot pass both parameters and kwargs"
+            self.queries.append((cypher, parameters))
             return records
 
     class Session:
@@ -177,11 +185,11 @@ def test_bm25_retriever_runs_the_sparse_query():
     assert [item.metadata["id"] for item in result.items] == ["c1", "c2"]
     assert result.items[0].content == "t1"
     assert result.items[0].metadata["score"] == 0.9
-    query, kwargs = driver.tx.queries[0]
+    query, parameters = driver.tx.queries[0]
     assert query == retrievers.SPARSE_CYPHER
-    assert kwargs["index_name"] == "chunk_text_ft"
-    assert kwargs["query"] == "operational risk"
-    assert kwargs["top_k"] == 2
+    assert parameters["index_name"] == "chunk_text_ft"
+    assert parameters["query_text"] == "operational risk"
+    assert parameters["top_k"] == 2
 
 
 def test_bm25_retriever_empty_query_skips_the_driver():
