@@ -104,6 +104,10 @@ def _build_prompt(
         "column names are an error.\n"
         "- Return at most 25 rows (add a LIMIT).\n"
         "- Use only the node labels and relationship types above.\n"
+        "- A relationship type connects ONLY the endpoint pairs listed above. "
+        "If no listed pair links two labels directly (e.g. System to "
+        "Obligation), do not invent an edge — the association must be reached "
+        "by traversing intermediate nodes that ARE connected.\n"
         "- Output ONLY the Cypher query, no explanation, no code fences.\n\n"
         f"QUESTION: {question}\n"
     )

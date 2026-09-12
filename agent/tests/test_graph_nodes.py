@@ -354,3 +354,10 @@ def test_build_graph_lookup_route_retries_once_then_synthesizes(monkeypatch):
     assert result["iterations"] == 2  # one retrieve + one retry
     assert "insufficient: need clause 15" in result["notes"]
     assert result["answer"] == "Answer."
+
+def test_rewrite_prompt_expands_informal_phrasing():
+    """Informal wording (backup user data) must be expanded to the regulatory
+    vocabulary the corpus actually uses, keeping the original words too."""
+    assert "regulatory and architecture vocabulary" in graph_mod.REWRITE_PROMPT
+    assert "business continuity" in graph_mod.REWRITE_PROMPT
+    assert "keep the original words AND the expansions" in graph_mod.REWRITE_PROMPT

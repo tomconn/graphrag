@@ -373,3 +373,13 @@ def test_build_prompt_includes_question_and_retry_context(schema):
 def test_load_schema_reads_the_yaml_file(schema):
     loaded = text2cypher.load_schema(str(REPO_ROOT / "schema" / "graph_schema.yaml"))
     assert loaded == schema
+
+def test_build_prompt_warns_about_unlisted_endpoint_pairs(schema):
+    """The prompt must forbid inventing edges between labels no listed
+    relationship pair connects (e.g. System to Obligation), which the model
+    otherwise hallucinates and the graph can never match."""
+    prompt = text2cypher._build_prompt(
+        "which systems implement the backup obligation?",
+        text2cypher.render_knowledge_layer(schema))
+    assert "connects ONLY the endpoint pairs listed" in prompt
+    assert "do not invent an edge" in prompt

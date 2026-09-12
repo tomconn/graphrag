@@ -61,8 +61,13 @@ ROUTE_PROMPT = (
 
 REWRITE_PROMPT = (
     "Rewrite the question as a concise search query: expand vague wording, "
-    "keep key entities and clause identifiers, drop politeness. Output only "
-    "the rewritten query.\n\nQuestion: {question}"
+    "keep key entities and clause identifiers, drop politeness. If the "
+    "question uses informal phrasing, also expand it into the formal "
+    "regulatory and architecture vocabulary the documents likely use — for "
+    "example 'backup user data' as 'business continuity plans, tolerance "
+    "levels, technology resilience, recovery'; keep the original words AND "
+    "the expansions so both match. Output only the rewritten query.\n\n"
+    "Question: {question}"
 )
 
 SUFFICIENCY_PROMPT = (
