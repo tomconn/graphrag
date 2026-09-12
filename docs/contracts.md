@@ -7,7 +7,7 @@ Implementation contracts shared across the three services. The README is the des
 | Service | Port | Reads |
 |---|---|---|
 | FastAPI backend (ui container) | `8000` (published `${FASTAPI_PORT}`) | `AGENT_URL` (default `http://agent:8001`), `DATA_DIR` (mounted `data/`, read-only) |
-| Agent (LangGraph) | `8001` (published `${AGENT_PORT}`) | `NEO4J_*`, `LLM_*`, `EMBEDDING_MODEL/DIM`, `RETRIEVAL_MODE`, `SCHEMA_FILE` (`/app/schema/graph_schema.yaml`), `TRACE_DIR` (`/app/eval/traces`) |
+| Agent | `8001` (published `${AGENT_PORT}`) | `NEO4J_*`, `LLM_*`, `EMBEDDING_MODEL/DIM`, `RETRIEVAL_MODE`, `SCHEMA_FILE` (`/app/schema/graph_schema.yaml`), `TRACE_DIR` (`/app/eval/traces`) |
 | Ingest | one-off | `NEO4J_*`, `LLM_*`, `EMBEDDING_MODEL/DIM`, `CHUNK_SIZE/CHUNK_OVERLAP`, `SCHEMA_FILE` |
 | Neo4j | 7474 / 7687 | `NEO4J_PASSWORD` |
 

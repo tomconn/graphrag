@@ -1,5 +1,5 @@
 """Unit tests for agent/app/main.py — the FastAPI /health and /chat (SSE)
-endpoints with the compiled LangGraph replaced by a stub.
+endpoints with the compiled agent graph replaced by a stub.
 """
 import json
 from types import SimpleNamespace

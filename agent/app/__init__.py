@@ -1,2 +1,2 @@
-"""GraphRAG agent (container 2): LangGraph agent with hybrid retrieval,
+"""GraphRAG agent (container 2): hybrid retrieval,
 Text2Cypher and citation assembly."""

@@ -5,7 +5,7 @@ A proof-of-concept **GraphRAG-powered agent** that answers questions across an i
 The whole stack runs locally on a Mac (Rancher Desktop) with three Docker Compose containers:
 
 1. **UI app** — React frontend + FastAPI backend for chat-style retrieval
-2. **Agent** — a LangGraph agent with hybrid retrieval, Text2Cypher and agentic routing
+2. **Agent** — an agent with hybrid retrieval, Text2Cypher and agentic routing
 3. **Neo4j** — Community Edition as the GraphRAG store
 
 A one-off ingestion job loads and extracts the source documents into the graph.
@@ -42,7 +42,7 @@ flowchart LR
     end
 
     subgraph agent["Container 2 — Agent"]
-        LG["LangGraph agent"]
+        AGENT["Agent"]
     end
 
     subgraph neo4j["Container 3 — GraphRAG store"]
@@ -56,10 +56,10 @@ flowchart LR
     CORPUS["data/ — markdown docs, regulatory documents, source code"]
 
     REACT -->|/api/chat SSE| FASTAPI
-    FASTAPI -->|HTTP| LG
-    LG -->|Cypher / Bolt| N4J
-    LG -->|OpenAI-compatible API| LLM["OpenAI-compatible LLM endpoint (host :11434 → cloud subscription)"]
-    LG -->|embeddings, in-process| EMB["FastEmbed (ONNX)"]
+    FASTAPI -->|HTTP| AGENT
+    AGENT -->|Cypher / Bolt| N4J
+    AGENT -->|OpenAI-compatible API| LLM["OpenAI-compatible LLM endpoint (host :11434 → cloud subscription)"]
+    AGENT -->|embeddings, in-process| EMB["FastEmbed (ONNX)"]
     ING -->|writes nodes + vectors| N4J
     ING -->|embeddings, in-process| EMB
     CORPUS --> ING
@@ -82,9 +82,9 @@ flowchart LR
 - **FastAPI backend** in the same container: exposes `/api/chat` (SSE streaming), forwards to the agent container, relays token streams back to the browser.
 - Rationale: keeps the three-container topology simple — the browser never talks to the agent directly.
 
-### 2. Agent (Container 2) — LangGraph
+### 2. Agent (Container 2)
 
-The agent is a LangGraph state machine. Proposed node flow:
+The agent is a state machine (implemented with LangGraph). Proposed node flow:
 
 ```
 route → rewrite → retrieve → (traverse?) → synthesize → cite
@@ -115,7 +115,7 @@ Every LLM call is logged with its stage label (`llm call purpose=<stage>` / `llm
 sequenceDiagram
     autonumber
     participant U as User (UI :3000)
-    participant A as Agent (LangGraph :8001)
+    participant A as Agent (:8001)
     participant L as LLM (OpenAI-compatible API)
     participant N as Neo4j (:7687)
 
@@ -253,7 +253,7 @@ graphrag/
 ├── schema/                   # graph_schema.yaml — shared source of truth for ingest + agent
 ├── eval/                     # golden question set (in git); traces/ (git-ignored)
 ├── ui/                       # React frontend + FastAPI backend, Dockerfile
-├── agent/                    # LangGraph agent, Dockerfile
+├── agent/                    # Agent (implemented in LangGraph), Dockerfile
 └── ingest/                   # ingestion pipeline, Dockerfile
 ```
 

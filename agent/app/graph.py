@@ -1,4 +1,4 @@
-"""LangGraph state machine: route → rewrite → retrieve → (traverse) →
+"""Agent state machine (implemented with LangGraph): route → rewrite → retrieve → (traverse) →
 sufficiency → synthesize → cite.
 
 Nodes are sync functions; token streaming from ``synthesize`` goes through
