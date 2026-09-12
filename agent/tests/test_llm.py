@@ -116,3 +116,37 @@ def test_client_is_cached(monkeypatch):
     second = llm._client()
     assert first is second
     assert len(built) == 1
+
+# ------------------------------------------------------------------ purpose
+
+def test_complete_logs_purpose(stub_client, caplog):
+    """The call and reply are logged with the caller-supplied stage label."""
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))])
+    stub_client.install(response)
+    with caplog.at_level("INFO", logger="app.llm"):
+        llm.complete("prompt", purpose="route")
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("llm call purpose=route" in m for m in messages)
+    assert any("llm reply purpose=route" in m for m in messages)
+
+
+def test_complete_purpose_defaults_to_prompt_excerpt(stub_client, caplog):
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=""))])
+    stub_client.install(response)
+    with caplog.at_level("INFO", logger="app.llm"):
+        llm.complete("Classify the question into exactly one intent category")
+    assert any("purpose=Classify the question into" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_stream_logs_reply_when_consumed(stub_client, caplog):
+    chunks = [SimpleNamespace(choices=[SimpleNamespace(
+        delta=SimpleNamespace(content="ok"))])]
+    completions = stub_client.install(None, stream_chunks=chunks)
+    completions.create = lambda **kw: iter(chunks)
+    with caplog.at_level("INFO", logger="app.llm"):
+        assert list(llm.stream("p", purpose="synthesize")) == ["ok"]
+    assert any("llm reply purpose=synthesize" in r.getMessage()
+               for r in caplog.records)

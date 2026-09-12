@@ -96,28 +96,28 @@ def test_render_context_prefers_section_then_coderef_then_id():
 def test_route_node_known_and_unknown_routes(monkeypatch):
     monkeypatch.setattr(
         llm, "complete",
-        lambda prompt, temperature=0.2: "relationship because multi-hop")
+        lambda prompt, temperature=0.2, purpose="": "relationship because multi-hop")
     state = _route_node({"question": "How do A and B relate?"})
     assert state["route"] == "relationship"
     assert "multi-hop" in state["route_rationale"]
 
-    monkeypatch.setattr(llm, "complete", lambda prompt, temperature=0.2: "gibberish")
+    monkeypatch.setattr(llm, "complete", lambda prompt, temperature=0.2, purpose="": "gibberish")
     assert _route_node({"question": "q"})["route"] == "lookup"  # falls back
 
 
 def test_route_node_empty_output_falls_back(monkeypatch):
-    monkeypatch.setattr(llm, "complete", lambda prompt, temperature=0.2: "")
+    monkeypatch.setattr(llm, "complete", lambda prompt, temperature=0.2, purpose="": "")
     assert _route_node({"question": "q"})["route"] == "lookup"
 
 
 def test_rewrite_node_strips_quotes(monkeypatch):
     monkeypatch.setattr(
-        llm, "complete", lambda prompt, temperature=0.2: ' "cleaned query" ')
+        llm, "complete", lambda prompt, temperature=0.2, purpose="": ' "cleaned query" ')
     assert _rewrite_node({"question": "raw"})["rewritten"] == "cleaned query"
 
 
 def test_rewrite_node_keeps_question_when_model_returns_empty(monkeypatch):
-    monkeypatch.setattr(llm, "complete", lambda prompt, temperature=0.2: "   ")
+    monkeypatch.setattr(llm, "complete", lambda prompt, temperature=0.2, purpose="": "   ")
     assert _rewrite_node({"question": "original"})["rewritten"] == "original"
 
 
@@ -164,7 +164,7 @@ def test_route_after_sufficiency():
 
 def test_sufficiency_node_hard_cap_bypasses_llm(monkeypatch):
     called = []
-    monkeypatch.setattr(llm, "complete", lambda p, temperature=0.2: called.append(p))
+    monkeypatch.setattr(llm, "complete", lambda p, temperature=0.2, purpose="": called.append(p))
     update = _sufficiency_node({"iterations": 3, "context": [chunk("c1")]})
     assert update["sufficient"] is True
     assert "hard cap" in update["sufficiency_note"]
@@ -173,13 +173,13 @@ def test_sufficiency_node_hard_cap_bypasses_llm(monkeypatch):
 
 def test_sufficiency_node_judges_context(monkeypatch):
     monkeypatch.setattr(
-        llm, "complete", lambda p, temperature=0.2: "sufficient")
+        llm, "complete", lambda p, temperature=0.2, purpose="": "sufficient")
     update = _sufficiency_node(
         {"question": "q", "iterations": 1, "context": [chunk("c1")]})
     assert update["sufficient"] is True and update["iterations"] == 1
 
     monkeypatch.setattr(
-        llm, "complete", lambda p, temperature=0.2:
+        llm, "complete", lambda p, temperature=0.2, purpose="":
         "insufficient: missing clause 15 details")
     update = _sufficiency_node(
         {"question": "q", "iterations": 1, "context": []})
@@ -225,7 +225,7 @@ def test_cite_node_combines_retrieval_and_graph_ids(monkeypatch):
 
 
 def test_synthesize_node_streams_and_joins(monkeypatch):
-    monkeypatch.setattr(llm, "stream", lambda prompt, temperature=0.2:
+    monkeypatch.setattr(llm, "stream", lambda prompt, temperature=0.2, purpose="":
                         iter(["Answer ", "part"]))
     tokens = []
     monkeypatch.setattr(graph_mod, "get_stream_writer", lambda: tokens.append)
@@ -237,7 +237,7 @@ def test_synthesize_node_streams_and_joins(monkeypatch):
 
 
 def test_synthesize_node_empty_notes(monkeypatch):
-    monkeypatch.setattr(llm, "stream", lambda prompt, temperature=0.2: iter(["x"]))
+    monkeypatch.setattr(llm, "stream", lambda prompt, temperature=0.2, purpose="": iter(["x"]))
     update = _synthesize_node({"question": "q", "context": []})
     assert update["answer"] == "x"
 
@@ -304,9 +304,9 @@ def test_build_graph_end_to_end_relationship_route(monkeypatch):
         "sufficient",                               # sufficiency
     ])
     monkeypatch.setattr(
-        llm, "complete", lambda prompt, temperature=0.2: next(answers))
+        llm, "complete", lambda prompt, temperature=0.2, purpose="": next(answers))
     monkeypatch.setattr(
-        llm, "stream", lambda prompt, temperature=0.2: iter(["The answer."]))
+        llm, "stream", lambda prompt, temperature=0.2, purpose="": iter(["The answer."]))
     monkeypatch.setattr(graph_mod.retrievers, "RetrievalService",
                         StubRetrievalService)
     monkeypatch.setattr(text2cypher, "load_schema", lambda: {})
@@ -339,9 +339,9 @@ def test_build_graph_lookup_route_retries_once_then_synthesizes(monkeypatch):
         "sufficient",                   # sufficiency (iteration 2)
     ])
     monkeypatch.setattr(
-        llm, "complete", lambda prompt, temperature=0.2: next(answers))
+        llm, "complete", lambda prompt, temperature=0.2, purpose="": next(answers))
     monkeypatch.setattr(
-        llm, "stream", lambda prompt, temperature=0.2: iter(["Answer."]))
+        llm, "stream", lambda prompt, temperature=0.2, purpose="": iter(["Answer."]))
     monkeypatch.setattr(graph_mod.retrievers, "RetrievalService",
                         StubRetrievalService)
     monkeypatch.setattr(citations, "build_citations", lambda driver, ids: [])

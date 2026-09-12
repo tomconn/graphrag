@@ -124,7 +124,7 @@ def _render_context(
 
 def _route_node(state: AgentState) -> dict[str, Any]:
     question = state["question"]
-    output = llm.complete(ROUTE_PROMPT.format(question=question))
+    output = llm.complete(ROUTE_PROMPT.format(question=question), purpose="route")
     route = _first_token(output, "lookup")
     if route not in ROUTES:
         route = "lookup"
@@ -134,7 +134,9 @@ def _route_node(state: AgentState) -> dict[str, Any]:
 
 
 def _rewrite_node(state: AgentState) -> dict[str, Any]:
-    rewritten = llm.complete(REWRITE_PROMPT.format(question=state["question"]))
+    rewritten = llm.complete(
+        REWRITE_PROMPT.format(question=state["question"]), purpose="rewrite"
+    )
     rewritten = rewritten.strip().strip('"') or state["question"]
     _log.info("rewritten=%s", rewritten)
     return {"rewritten": rewritten}
@@ -160,7 +162,11 @@ def _retrieve_node(state: AgentState, service: retrievers.RetrievalService) -> d
 def _route_after_retrieve(state: AgentState) -> str:
     traverse_wanted = state.get("route") in ("relationship", "compliance-mapping")
     hybrid = state.get("retrieval_mode", DEFAULT_RETRIEVAL_MODE) == "hybrid"
-    return "traverse" if (traverse_wanted and hybrid) else "sufficiency"
+    if traverse_wanted and hybrid:
+        _log.info("hybrid path: route=%s -> knowledge-graph traversal",
+                  state.get("route"))
+        return "traverse"
+    return "sufficiency"
 
 
 def _traverse_node(
@@ -168,13 +174,18 @@ def _traverse_node(
 ) -> dict[str, Any]:
     schema = text2cypher.load_schema()
     result = text2cypher.run_text2cypher(
-        service.dense.driver, state["question"], schema, llm.complete
+        service.dense.driver, state["question"], schema,
+        lambda prompt: llm.complete(prompt, purpose="text2cypher"),
     )
     if result is None:
+        _log.warning("graph path failed after %d attempts; hybrid retrieval "
+                     "context only", text2cypher.MAX_ATTEMPTS)
         return {
             "notes": list(state.get("notes", []))
             + ["Text2Cypher failed after 3 attempts; answering from hybrid retrieval."]
         }
+    _log.info("graph path succeeded: cypher_rows=%d graph_chunk_refs=%d",
+              len(result["rows"]), len(result["chunk_refs"]))
     rows_text = text2cypher.rows_to_text(result["rows"])
     graph_chunk = {
         "id": "graph:traversal",
@@ -205,7 +216,8 @@ def _sufficiency_node(state: AgentState) -> dict[str, Any]:
         }
     context_text = _render_context(state.get("context", []))
     output = llm.complete(
-        SUFFICIENCY_PROMPT.format(question=state["question"], context=context_text)
+        SUFFICIENCY_PROMPT.format(question=state["question"], context=context_text),
+        purpose="sufficiency",
     )
     sufficient = _first_token(output, "insufficient") == "sufficient"
     note = output.strip()[:300] if not sufficient else ""
@@ -227,7 +239,7 @@ def _synthesize_node(state: AgentState) -> dict[str, Any]:
         notes=notes_text,
     )
     pieces: list[str] = []
-    for token in llm.stream(prompt):
+    for token in llm.stream(prompt, purpose="synthesize"):
         pieces.append(token)
         if writer:
             writer({"type": "token", "text": token})

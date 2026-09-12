@@ -117,5 +117,9 @@ One JSON object per line, one file per run:
 
 - Python: stdlib + minimal deps; every container has `requirements.txt` pinned loosely
   (`package>=x,<major+1`). Type hints on public functions. `os.environ` config only.
-- Logging: `logging` module, INFO default.
+- Logging: `logging` module, INFO default. Every agent LLM call is logged as
+  `llm call purpose=<stage>` / `llm reply purpose=<stage>` (stage = route,
+  rewrite, text2cypher, sufficiency, synthesize); graph-path engagement and
+  fallback are logged by `agent/app/graph.py` (`hybrid path: ... ->
+  knowledge-graph traversal`, `graph path succeeded/failed`).
 - No tests required beyond module importability; `python -m compileall` must pass.
