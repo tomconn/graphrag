@@ -361,3 +361,20 @@ def test_rewrite_prompt_expands_informal_phrasing():
     assert "regulatory and architecture vocabulary" in graph_mod.REWRITE_PROMPT
     assert "business continuity" in graph_mod.REWRITE_PROMPT
     assert "keep the original words AND the expansions" in graph_mod.REWRITE_PROMPT
+
+
+def test_traverse_node_uses_rewritten_query(monkeypatch):
+    """The traversal must Cypher over the rewritten query (which carries the
+    vocabulary expansion), not the raw question."""
+    seen = {}
+    monkeypatch.setattr(text2cypher, "load_schema", lambda: {})
+
+    def fake_run(driver, question, schema, complete_fn):
+        seen["question"] = question
+        return {"cypher": "MATCH (n) RETURN n LIMIT 1", "rows": [],
+                "chunk_refs": []}
+
+    monkeypatch.setattr(text2cypher, "run_text2cypher", fake_run)
+    _traverse_node({"question": "raw q", "rewritten": "expanded q"},
+                   FakeService([]))
+    assert seen["question"] == "expanded q"

@@ -188,8 +188,12 @@ def _traverse_node(
     def complete_cypher(prompt: str) -> str:
         return llm.complete(prompt, purpose="text2cypher", max_tokens=budget)
 
+    # Same input the retrieve node uses: the rewritten query carries the
+    # vocabulary expansion (informal -> regulatory terms), which is what the
+    # Cypher WHERE clauses should match on.
+    query = state.get("rewritten") or state["question"]
     result = text2cypher.run_text2cypher(
-        service.dense.driver, state["question"], schema, complete_cypher,
+        service.dense.driver, query, schema, complete_cypher,
     )
     if result is None:
         _log.warning("graph path failed after %d attempts; hybrid retrieval "
