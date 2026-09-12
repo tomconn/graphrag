@@ -96,9 +96,9 @@ def test_stream_skips_empty_deltas_and_role_chunks(stub_client):
 # ------------------------------------------------------------------ _model()
 
 def test_model_from_env(monkeypatch):
-    monkeypatch.setenv("OLLAMA_MODEL", "test-model")
+    monkeypatch.setenv("LLM_MODEL", "test-model")
     assert llm._model() == "test-model"
-    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
     assert llm._model() == "glm-5.3-flash:cloud"
 
 
@@ -202,3 +202,23 @@ def test_stream_logs_warning_on_truncated_reply(stub_client, caplog):
         assert list(llm.stream("p", max_tokens=50)) == ["partial"]
     assert any("truncated by the 50-token cap" in r.getMessage()
                for r in caplog.records)
+
+
+def test_client_reads_generic_llm_env(monkeypatch):
+    """The client is configured from LLM_BASE_URL / LLM_API_KEY / LLM_MODEL —
+    any OpenAI-compatible endpoint, nothing provider-specific."""
+    built = []
+
+    def factory(**kwargs):
+        built.append(kwargs)
+        return SimpleNamespace(chat=SimpleNamespace())
+
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("LLM_MODEL", "test-model")
+    monkeypatch.setattr(llm, "_CLIENT", None)
+    monkeypatch.setattr(llm.openai, "OpenAI", factory)
+    llm._client()
+    assert built[0]["base_url"] == "https://api.example.com/v1"
+    assert built[0]["api_key"] == "sk-test"
+    assert llm._model() == "test-model"

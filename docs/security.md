@@ -21,7 +21,7 @@ internet-exposed deployment.
 4. **Corpus → graph.** A malicious document in `data/` poisons entities and
    relations *durably* at ingest time — poisoning survives re-answers.
 5. **Agent → Neo4j.** Text2Cypher turns LLM output into database statements.
-6. **Runtime → external services.** Ollama Cloud (prompts leave the machine),
+6. **Runtime → external services.** The configured LLM endpoint (prompts leave the machine),
    the embedding model source (Hugging Face hub at build time).
 
 ## Mitigations in code
@@ -54,7 +54,7 @@ internet-exposed deployment.
   an identity boundary in front of the UI.
 - **Secrets**: the real Neo4j password lives in `.env` (git-ignored);
   `.env.example` carries only placeholders. The agent's LLM API key is
-  `OLLAMA_API_KEY` in `.env`. Never commit `.env`; never ship default Neo4j
+  `LLM_API_KEY` in `.env`. Never commit `.env`; never ship default Neo4j
   credentials.
 - **Data paths that must never be committed**: `data/` (retrieved corpus
   text), `eval/traces/` (question/answer traces), `eval/ingest-logs/` (ingest
@@ -80,5 +80,5 @@ the tell.
 - Trace and log files contain retrieved corpus text — treated as internal
   data, never committed.
 - Poisoned-corpus risk (above) — mitigated by review, not by code.
-- Ollama Cloud sees all prompts (including chunk text). For confidential
-  documents, run a local model instead of `:cloud`.
+- The LLM endpoint sees all prompts (including chunk text). For confidential
+  documents, run a self-hosted OpenAI-compatible model instead of a cloud endpoint.

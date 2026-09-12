@@ -105,7 +105,7 @@ class ExtractionError(RuntimeError):
 
 
 class Extractor:
-    """Schema-guided LLM extraction against an OpenAI-compatible Ollama API."""
+    """Schema-guided LLM extraction against an OpenAI-compatible API."""
 
     def __init__(self, schema_path: str | None = None):
         self.schema_path = schema_path or os.environ.get(
@@ -116,7 +116,7 @@ class Extractor:
         self.relationships: dict[str, dict] = self.schema["knowledge_layer"]["relationships"]
         self.per_class: dict[str, dict] = self.schema["extraction"]["per_class"]
         self._client = None
-        self._model = os.environ.get("OLLAMA_MODEL", "glm-5.3-flash:cloud")
+        self._model = os.environ.get("LLM_MODEL", "glm-5.3-flash:cloud")
 
     # -- LLM client (lazy: only needed when extraction runs) ---------------
 
@@ -126,8 +126,8 @@ class Extractor:
             from openai import OpenAI
             self._client = OpenAI(
                 base_url=os.environ.get(
-                    "OLLAMA_BASE_URL", "http://host.docker.internal:11434/v1"),
-                api_key=os.environ.get("OLLAMA_API_KEY", "ollama"),
+                    "LLM_BASE_URL", "http://host.docker.internal:11434/v1"),
+                api_key=os.environ.get("LLM_API_KEY", "noop"),
                 timeout=120.0,
             )
         return self._client

@@ -58,7 +58,7 @@ flowchart LR
     REACT -->|/api/chat SSE| FASTAPI
     FASTAPI -->|HTTP| LG
     LG -->|Cypher / Bolt| N4J
-    LG -->|OpenAI-compatible API| OLLAMA["Ollama daemon (host :11434) → Ollama Cloud"]
+    LG -->|OpenAI-compatible API| LLM["OpenAI-compatible LLM endpoint (host :11434 → cloud subscription)"]
     LG -->|embeddings, in-process| EMB["FastEmbed (ONNX)"]
     ING -->|writes nodes + vectors| N4J
     ING -->|embeddings, in-process| EMB
@@ -116,7 +116,7 @@ sequenceDiagram
     autonumber
     participant U as User (UI :3000)
     participant A as Agent (LangGraph :8001)
-    participant L as LLM (Ollama daemon → cloud)
+    participant L as LLM (OpenAI-compatible API)
     participant N as Neo4j (:7687)
 
     U->>A: question (SSE)
@@ -224,21 +224,19 @@ The graph's value comes from **cross-class edges**: e.g. `(CodeComponent)-[:MITI
 
 | Role | Model | Access | Notes |
 |---|---|---|---|
-| Reasoning / generation / extraction | **`glm-5.3-flash:cloud`** | Local Ollama daemon (OpenAI-compatible), proxied to Ollama Cloud (Pro) | Used by the agent (synthesis, routing, rewriting) and by the ingestion job (entity/relation extraction) |
+| Reasoning / generation / extraction | **`glm-5.3-flash:cloud`** | OpenAI-compatible API — local daemon on `:11434` proxying to a cloud subscription | Used by the agent (synthesis, routing, rewriting) and by the ingestion job (entity/relation extraction) |
 | Embeddings | **`mixedbread-ai/mxbai-embed-large-v1`** | In-process via **FastEmbed** (int8-quantized ONNX) | 1024-dim dense, strong fine-grained matching for clause↔code citations. CPU-only and container-friendly — no GPU/MPS needed. **The agent and ingest job must use the identical model** so queries and chunks share one vector space (`EMBEDDING_MODEL` enforces this) |
 
-No LLM runs locally — the agent and ingestion job both call the Ollama API (local daemon proxying to Ollama Cloud), so containers stay small and CPU-only. Embeddings run in-process on CPU (quantized ONNX); sparse retrieval is BM25 over the Neo4j full-text index, not a model.
+No LLM runs locally — the agent and ingestion job both call a remote LLM through an **OpenAI-compatible Chat Completions API** (the OpenAI Python SDK pointed at `LLM_BASE_URL`), so containers stay small and CPU-only. Embeddings run in-process on CPU (quantized ONNX); sparse retrieval is BM25 over the Neo4j full-text index, not a model.
 
-### Accessing Ollama Cloud (Pro subscription)
+### Configuring the LLM endpoint (OpenAI-compatible)
 
-No API keys are managed by this project. The local Ollama daemon (port `11434`) proxies any `:cloud`-suffixed model up to Ollama Cloud, where the Pro subscription handles auth — the Pro API key lives in Ollama's own credential store (`~/.ollama`, set at sign-in) and clients never see it. Ollama accepts any bearer token for its API, so a dummy token suffices.
+The client is deliberately provider-agnostic: anything speaking the OpenAI
+Chat Completions protocol works. Three variables configure it:
 
-**Container wiring (default path):**
-
-- `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1` — containers reach the host-side daemon via `host.docker.internal` (Rancher Desktop provides this)
-- `OLLAMA_API_KEY=ollama` — placeholder; the daemon accepts any token
-
-**Direct cloud path (fallback):** if the local daemon isn't running (e.g. CI, another machine), set `OLLAMA_BASE_URL=https://ollama.com/v1` and put a real Ollama Cloud API key in `OLLAMA_API_KEY`.
+- `LLM_BASE_URL` — default `http://host.docker.internal:11434/v1`: a local daemon on the host (Rancher Desktop provides `host.docker.internal`) that proxies `:cloud`-suffixed model tags up to a cloud subscription. Point it at any OpenAI-compatible endpoint (self-hosted gateway, `https://api.openai.com/v1`, …) as needed.
+- `LLM_API_KEY` — default placeholder (`noop`). Locally-proxied setups accept any token (auth is handled by the daemon's own sign-in credential store, which clients never see); authenticated endpoints need a real key here.
+- `LLM_MODEL` — the model tag, `glm-5.3-flash:cloud`.
 
 **How the dev machine's Claude Code is wired (context, not part of the PoC runtime):** `~/.zshrc` exports `ANTHROPIC_BASE_URL=http://127.0.0.1:11434`, `ANTHROPIC_AUTH_TOKEN=ollama` and an empty `ANTHROPIC_API_KEY`, pointing Claude Code at the same local daemon; the default model is pinned in `~/.claude/settings.json` (`deepseek-v4-flash:cloud`). Two zsh aliases switch modes: `claude-local` (pins `glm-5.3-flash:cloud[1m]` via Ollama) and `claude-max` (unsets the exports and launches real Anthropic Claude). Same daemon as the PoC uses, different client.
 
@@ -266,7 +264,7 @@ graphrag/
 ### Prerequisites
 
 - macOS with [Rancher Desktop](https://rancherdesktop.io/) running (Docker Compose v2 compatible: enable *dockerd* as the container runtime)
-- Ollama installed, the local daemon running (`ollama serve`, port `11434`) and signed in to a Pro subscription (credentials in `~/.ollama` — no API key handling in this project)
+- An OpenAI-compatible LLM endpoint reachable from the containers — by default a local daemon on `:11434` (proxying `:cloud` model tags to a cloud subscription, signed in from its own credential store; no API key handling in this project)
 - 8 GB+ RAM available to Docker/Rancher Desktop (Neo4j is the heaviest service)
 
 ### Setup
@@ -277,8 +275,8 @@ git clone <repo-url> && cd graphrag
 
 # 2. Configure environment
 cp .env.example .env
-#    then edit .env — set Neo4j credentials (OLLAMA_* defaults work via the
-#    local daemon; see "Accessing Ollama Cloud" under Models)
+#    then edit .env — set Neo4j credentials (LLM_* defaults work via the
+#    local daemon; see "Configuring the LLM endpoint" under Models)
 
 # 3. Place source documents
 #    data/regulatory/   APRA CPS 234, CPS 230, ASIC, AUSTRAC, ACCC docs
@@ -304,9 +302,9 @@ open http://localhost:3000
 
 | Variable | Used by | Description |
 |---|---|---|
-| `OLLAMA_API_KEY` | agent, ingest | Placeholder (`ollama`) via the local daemon — any token is accepted; a real key only needed for direct `https://ollama.com/v1` access |
-| `OLLAMA_BASE_URL` | agent, ingest | Default `http://host.docker.internal:11434/v1` (local daemon); fallback `https://ollama.com/v1` (direct cloud) |
-| `OLLAMA_MODEL` | agent, ingest | Model tag — `glm-5.3-flash:cloud` |
+| `LLM_API_KEY` | agent, ingest | Default placeholder (`noop`) — local daemon setups accept any token (auth lives in the daemon's own credential store); authenticated endpoints need a real key |
+| `LLM_BASE_URL` | agent, ingest | Default `http://host.docker.internal:11434/v1` (local daemon); any OpenAI-compatible endpoint works |
+| `LLM_MODEL` | agent, ingest | Model tag — `glm-5.3-flash:cloud` |
 | `NEO4J_URI` | agent, ingest | Bolt URI — `bolt://neo4j:7687` (in-network) |
 | `NEO4J_USER` / `NEO4J_PASSWORD` | compose, agent, ingest | Neo4j auth (set a real password; don't ship defaults) |
 | `EMBEDDING_MODEL` | agent, ingest | `mixedbread-ai/mxbai-embed-large-v1` — **must be identical for agent and ingest** (shared vector space) |
@@ -349,13 +347,13 @@ Success will be assessed against sample questions that **cross document classes*
 ## Limitations & risks
 
 - **Neo4j Community Edition** — no RBAC, no hot backups, single instance; acceptable for a PoC, not for shared production use.
-- **Cloud LLM dependency** — all generation goes through Ollama Cloud (via the local daemon proxy): network-dependent, adds latency, and means document content (including regulatory material) leaves the machine during extraction/retrieval. Assess before ingesting anything sensitive.
+- **Cloud LLM dependency** — all generation goes through the configured OpenAI-compatible endpoint (by default a local daemon proxying to a cloud service): network-dependent, adds latency, and means document content (including regulatory material) leaves the machine during extraction/retrieval. Assess before ingesting anything sensitive.
 - **Extraction cost** — schema-guided extraction is the most expensive step: every chunk goes to the cloud LLM, and `data/` is unbounded (whatever is dropped in). Size the corpus before the first ingest run and keep a rough token-cost expectation in mind.
 - **Extraction quality** — the knowledge graph is only as good as `glm-5.3-flash:cloud`'s schema-guided extraction; wrong or missing edges degrade Text2Cypher answers. The PoC includes manual spot-checks of extracted edges.
 - **PDF conversion quality** — clause numbers must survive PDF→markdown conversion or regulatory citations break; spot-check converted markdown before ingesting (see pipeline step 1).
 - **Entity resolution is lexical** — cross-document merging matches on normalized `(label, name)` only; name variants across document classes stay separate nodes and fragment some cross-class edges. Accepted for the PoC (deterministic, idempotent); LLM-assisted reconciliation is a possible follow-up.
 - **Mac resource limits** — FastEmbed (CPU) + Neo4j + three containers together need headroom; Neo4j heap kept modest (CE, single user).
-- **Model availability** — `glm-5.3-flash:cloud` is the tag currently in use on this machine (a `[1m]` long-context variant also exists); confirm it's still offered under the Pro plan at build time. `OLLAMA_MODEL` makes switching a one-line change.
+- **Model availability** — `glm-5.3-flash:cloud` is the tag currently in use on this machine (a `[1m]` long-context variant also exists); confirm the endpoint still serves it at build time. `LLM_MODEL` makes switching a one-line change.
 
 ---
 
@@ -365,7 +363,7 @@ Success will be assessed against sample questions that **cross document classes*
 - Watcher-based ingestion service (auto-ingest on `data/` changes)
 - Automated evaluation runs in CI (retrieval recall, citation precision over the golden question set — the manual harness ships with the PoC)
 - Auth on the FastAPI backend; Neo4j Enterprise upgrade path if multi-user is needed
-- Local-model fallback (Ollama local) to remove cloud dependency
+- Local-model fallback (self-hosted OpenAI-compatible server) to remove cloud dependency
 
 ---
 
@@ -377,7 +375,6 @@ Success will be assessed against sample questions that **cross document classes*
 - [neo4j-graphrag Python package](https://neo4j.com/docs/neo4j-graphrag-python/)
 - [Neo4j Community Edition](https://neo4j.com/docs/operations-manual/current/installation/)
 - [LangGraph](https://langchain-ai.github.io/langgraph/)
-- [Ollama — Cloud models](https://docs.ollama.com/cloud)
 - [mxbai-embed-large-v1 (Mixedbread)](https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1)
 - [FastEmbed](https://qdrant.github.io/fastembed/)
 - [Rancher Desktop](https://docs.rancherdesktop.io/)
