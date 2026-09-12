@@ -150,3 +150,55 @@ def test_stream_logs_reply_when_consumed(stub_client, caplog):
         assert list(llm.stream("p", purpose="synthesize")) == ["ok"]
     assert any("llm reply purpose=synthesize" in r.getMessage()
                for r in caplog.records)
+
+
+# ------------------------------------------------------- budget + truncation
+
+def test_complete_max_tokens_override(stub_client):
+    """The stage-supplied budget overrides the default cap."""
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+    completions = stub_client.install(response)
+    llm.complete("p", max_tokens=8192)
+    assert completions.calls[0]["max_tokens"] == 8192
+    llm.complete("p")
+    assert completions.calls[1]["max_tokens"] == llm._DEFAULT_MAX_TOKENS
+
+
+def test_complete_logs_warning_on_truncated_reply(stub_client, caplog):
+    """finish_reason=length means the output was cut (e.g. a Cypher statement
+    severed mid-pattern) — the log must say so explicitly."""
+    response = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content="MATCH (c:CpsClause)<-[g:REL"),
+        finish_reason="length")])
+    stub_client.install(response)
+    with caplog.at_level("WARNING", logger="app.llm"):
+        llm.complete("p", purpose="text2cypher", max_tokens=100)
+    assert any("truncated by the 100-token cap" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_complete_no_warning_when_finish_is_stop(stub_client, caplog):
+    response = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content="ok"), finish_reason="stop")])
+    stub_client.install(response)
+    with caplog.at_level("WARNING", logger="app.llm"):
+        llm.complete("p")
+    assert not [r for r in caplog.records if "truncated" in r.getMessage()]
+
+
+def test_stream_logs_warning_on_truncated_reply(stub_client, caplog):
+    chunks = [
+        SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="partial"),
+            finish_reason=None)]),
+        SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=""),
+            finish_reason="length")]),
+    ]
+    completions = stub_client.install(None, stream_chunks=chunks)
+    completions.create = lambda **kw: iter(chunks)
+    with caplog.at_level("WARNING", logger="app.llm"):
+        assert list(llm.stream("p", max_tokens=50)) == ["partial"]
+    assert any("truncated by the 50-token cap" in r.getMessage()
+               for r in caplog.records)

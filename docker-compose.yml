@@ -32,6 +32,7 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL}
       EMBEDDING_DIM: ${EMBEDDING_DIM}
       RETRIEVAL_MODE: ${RETRIEVAL_MODE:-hybrid}
+      TEXT2CYPHER_MAX_TOKENS: ${TEXT2CYPHER_MAX_TOKENS:-8192}
       SCHEMA_FILE: /app/schema/graph_schema.yaml
       TRACE_DIR: /app/eval/traces
     ports:

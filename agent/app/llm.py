@@ -54,52 +54,75 @@ def _purpose_from_prompt(prompt: str) -> str:
 
 
 def complete(
-    prompt: str, temperature: float = _TEMPERATURE, purpose: str = ""
+    prompt: str,
+    temperature: float = _TEMPERATURE,
+    purpose: str = "",
+    max_tokens: int | None = None,
 ) -> str:
     """One-shot completion. ``purpose`` names the pipeline stage making the
     call so the log shows which stage used the LLM; it falls back to a
-    prompt excerpt."""
+    prompt excerpt. ``max_tokens`` overrides the per-call completion budget
+    (stages with long outputs may raise it)."""
     purpose = purpose or _purpose_from_prompt(prompt)
-    _log.info("llm call purpose=%s model=%s prompt_chars=%d",
-              purpose, _model(), len(prompt))
+    budget = max_tokens if max_tokens is not None else _max_tokens()
+    _log.info("llm call purpose=%s model=%s prompt_chars=%d max_tokens=%d",
+              purpose, _model(), len(prompt), budget)
     started = time.monotonic()
     response = _client().chat.completions.create(
         model=_model(),
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
-        max_tokens=_max_tokens(),
+        max_tokens=budget,
     )
-    content = (response.choices[0].message.content or "").strip()
+    choice = response.choices[0]
+    content = (choice.message.content or "").strip()
+    if getattr(choice, "finish_reason", None) == "length":
+        # A truncated completion explains downstream syntax errors (e.g. a
+        # Cypher statement cut mid-pattern) — say so instead of leaving a
+        # mysterious parse failure.
+        _log.warning("llm reply purpose=%s truncated by the %d-token cap; "
+                     "output is incomplete", purpose, budget)
     _log.info("llm reply purpose=%s completion_chars=%d elapsed=%.1fs",
               purpose, len(content), time.monotonic() - started)
     return content
 
 
 def stream(
-    prompt: str, temperature: float = _TEMPERATURE, purpose: str = ""
+    prompt: str,
+    temperature: float = _TEMPERATURE,
+    purpose: str = "",
+    max_tokens: int | None = None,
 ) -> Iterator[str]:
     """Yield answer tokens in order; the reply line logs when the stream is
     fully consumed."""
     purpose = purpose or _purpose_from_prompt(prompt)
-    _log.info("llm call purpose=%s model=%s prompt_chars=%d",
-              purpose, _model(), len(prompt))
+    budget = max_tokens if max_tokens is not None else _max_tokens()
+    _log.info("llm call purpose=%s model=%s prompt_chars=%d max_tokens=%d",
+              purpose, _model(), len(prompt), budget)
     started = time.monotonic()
     response = _client().chat.completions.create(
         model=_model(),
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
-        max_tokens=_max_tokens(),
+        max_tokens=budget,
         stream=True,
     )
 
     def _generate() -> Iterator[str]:
         chars = 0
+        finish_reason = None
         for chunk in response:
             if chunk.choices:
-                delta = chunk.choices[0].delta
+                choice = chunk.choices[0]
+                delta = choice.delta
                 if delta and delta.content:
                     chars += len(delta.content)
                     yield delta.content
+                if getattr(choice, "finish_reason", None):
+                    finish_reason = choice.finish_reason
+        if finish_reason == "length":
+            _log.warning("llm reply purpose=%s truncated by the %d-token "
+                         "cap; output is incomplete", purpose, budget)
         _log.info("llm reply purpose=%s completion_chars=%d elapsed=%.1fs",
                   purpose, chars, time.monotonic() - started)
 

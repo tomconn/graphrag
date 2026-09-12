@@ -9,6 +9,7 @@ observed by the caller via stream_mode="updates".
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, TypedDict
 
 from langgraph.config import get_stream_writer
@@ -173,9 +174,17 @@ def _traverse_node(
     state: AgentState, service: retrievers.RetrievalService
 ) -> dict[str, Any]:
     schema = text2cypher.load_schema()
+    # Cypher generations are the stage most likely to hit the token cap:
+    # reasoning models spend the budget on their reasoning channel and the
+    # statement comes back cut mid-pattern (an opaque syntax error on the
+    # retry). Give this stage its own, larger — still bounded — budget.
+    budget = int(os.environ.get("TEXT2CYPHER_MAX_TOKENS", "8192"))
+
+    def complete_cypher(prompt: str) -> str:
+        return llm.complete(prompt, purpose="text2cypher", max_tokens=budget)
+
     result = text2cypher.run_text2cypher(
-        service.dense.driver, state["question"], schema,
-        lambda prompt: llm.complete(prompt, purpose="text2cypher"),
+        service.dense.driver, state["question"], schema, complete_cypher,
     )
     if result is None:
         _log.warning("graph path failed after %d attempts; hybrid retrieval "

@@ -107,6 +107,10 @@ One JSON object per line, one file per run:
 - Duplicate RETURN column names are repaired deterministically before execution (the
   later duplicate alias is renamed `name` → `name_2`, first occurrence keeps its name)
   instead of spending a retry on the Neo4j syntax error.
+- Token budget: Cypher generation runs with `TEXT2CYPHER_MAX_TOKENS` (default 8192,
+  still a bounded LLM08 guard) — reasoning models can exhaust the default cap on the
+  reasoning channel and return the statement cut mid-pattern. A `finish_reason=length`
+  reply is logged as a truncation warning for any stage.
 - Any generated statement containing `CREATE|MERGE|DELETE|SET|DETACH|DROP|REMOVE|CALL|LOAD|FOREACH`
   (case-insensitive, scanned with string literals masked) is rejected before execution.
 - Any generated statement containing a `https?://` URL literal is rejected outright
