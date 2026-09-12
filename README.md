@@ -149,7 +149,7 @@ sequenceDiagram
     L-->>A: streamed answer tokens
     A->>N: citation lookup (chunk ids → document/section)
     A-->>U: answer + citations (SSE)
-``` |
+```
 
 ### 3. Neo4j GraphRAG store (Container 3)
 
