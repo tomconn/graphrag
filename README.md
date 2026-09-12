@@ -98,6 +98,59 @@ route → rewrite → retrieve → (traverse?) → synthesize → cite
 | **Text2Cypher** | Generates Cypher from the natural-language question against the known graph schema to traverse multi-hop relationships the vector index can't answer (e.g. *which code components relate to the control satisfying CPS 230 §23?*). Guardrails: the graph schema is injected into the prompt; generation happens on a **read-only** Neo4j session; generated statements are validated before execution; on validation/runtime error the agent retries with the error appended, bounded at 3 attempts, then falls back to hybrid retrieval |
 | **Citations** | Every synthesized answer carries provenance: document id, title, section/heading, and clause number where applicable (regulatory docs keep their native numbering). Code citations use a different provenance shape: `path/to/file.py#symbol[:lines]` |
 
+#### How Neo4j and the LLM interact in hybrid mode
+
+The key point: **Neo4j never calls the LLM, and the LLM never touches the graph directly.** The agent mediates, and the LLM is used at four distinct points per turn:
+
+1. **LLM as router/rewriter** (`purpose=route`, `purpose=rewrite`) — classifies intent and expands vocabulary. Pure text; no database involvement.
+2. **LLM as Cypher generator** (`purpose=text2cypher`) — this is the only LLM↔Neo4j coupling. The prompt carries the schema (node labels, relationship endpoint pairs, provenance note) plus the question; the LLM outputs a Cypher string. Our code then guards it (write-keyword/URL blocklist, duplicate-alias repair), runs `EXPLAIN` then the statement in a **read-only** Neo4j session, and on failure retries with the error appended (max 3) before falling back to retrieval-only. So the LLM *writes* the query; Neo4j *validates and executes* it; rows come back as plain data for the answer.
+3. **LLM as sufficiency judge** (`purpose=sufficiency`) — after retrieval + traversal, it decides whether the merged context answers the question; if not, the loop goes back to retrieve (max 3 iterations).
+4. **LLM as synthesizer** (`purpose=synthesize`) — streams the final answer from the merged context only, with citation attribution.
+
+Neo4j's native hybrid capabilities (the vector index + full-text index) are used *below* that: `retrievers.py` queries both indexes and fuses results (RRF) — that fusion is deterministic code, not an LLM call. So in "hybrid mode," the LLM contributes language understanding (routing, query generation, judging, synthesis) while Neo4j contributes both structured traversal (Cypher) and semantic/lexical retrieval (indexes) — with a hard boundary: the model can only shape read-only queries, never write or reach the DB outside that guarded channel.
+
+Every LLM call is logged with its stage label (`llm call purpose=<stage>` / `llm reply purpose=<stage>`), and the graph-path engagement and fallback lines (`hybrid path: … -> knowledge-graph traversal`, `graph path succeeded/failed`) make a single turn readable end-to-end from `docker logs graphrag-agent`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User (UI :3000)
+    participant A as Agent (LangGraph :8001)
+    participant L as LLM (Ollama daemon → cloud)
+    participant N as Neo4j (:7687)
+
+    U->>A: question (SSE)
+    A->>L: purpose=route — classify intent
+    L-->>A: lookup | relationship | compliance-mapping
+    A->>L: purpose=rewrite — expand informal → corpus vocabulary
+    L-->>A: rewritten query
+
+    rect rgb(240, 240, 255)
+        note over A,N: hybrid retrieval (deterministic code, no LLM)
+        A->>N: dense (vector index) + sparse (BM25 full-text index)
+        N-->>A: chunks — fused with RRF
+    end
+
+    opt route = relationship / compliance-mapping (hybrid mode)
+        A->>L: purpose=text2cypher — schema (labels + endpoint pairs) + query
+        L-->>A: Cypher statement
+        note over A: guard: write-keyword/URL blocklist,<br/>duplicate-alias repair, EXPLAIN first
+        A->>N: run statement — READ-ONLY session
+        N-->>A: rows (max 25)
+        note over A,L: on error: retry with the error appended (max 3 attempts),<br/>then fall back to retrieval-only context
+    end
+
+    loop until sufficient or 3 iterations (hard cap)
+        A->>L: purpose=sufficiency — does the context answer the question?
+        L-->>A: sufficient | insufficient: what is missing
+    end
+
+    A->>L: purpose=synthesize — answer ONLY from merged context
+    L-->>A: streamed answer tokens
+    A->>N: citation lookup (chunk ids → document/section)
+    A-->>U: answer + citations (SSE)
+``` |
+
 ### 3. Neo4j GraphRAG store (Container 3)
 
 Neo4j Community Edition (Docker image `neo4j:5-community`). Proposed schema:
@@ -260,6 +313,7 @@ open http://localhost:3000
 | `EMBEDDING_DIM` | agent, ingest | `1024` — must match the vector index |
 | `RETRIEVAL_MODE` | agent | `hybrid` (default) or `vector` — the vector-only baseline used in evaluation |
 | `AGENT_MAX_TOKENS` | agent | Completion budget per agent LLM call, default `4096` (unbounded-consumption guard; generous enough for a reasoning model's answer plus its thinking) |
+| `TEXT2CYPHER_MAX_TOKENS` | agent | Per-call completion budget for Cypher generation, default `8192` (reasoning models can exhaust the default cap on their reasoning channel and return the statement cut mid-pattern; still a bounded guard) |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | ingest | Semantic chunking parameters (regulatory + security docs) |
 | `INGEST_CONCURRENCY` | ingest | Concurrent extraction LLM calls (default `6`, bounded for cloud rate limits) |
 | `EXTRACT_MAX_TOKENS` | ingest | Base completion budget per extraction attempt (default `8192`, doubled on each retry — reasoning models spend completion tokens on their reasoning channel before emitting JSON) |
